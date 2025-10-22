@@ -312,10 +312,13 @@ async def forward(self):
     if roomId is None:
         bt.logging.error("Failed to create room, exiting.")
         return
-    
+
     # ===============GAME LOOP=======================
     while game_state.gameWinner is None:
+        bt.logging.info("=" * 50)
         bt.logging.info(f"Game step {game_step + 1}")
+        bt.logging.info(f"Current Team: {game_state.currentTeam}")
+        bt.logging.info(f"Current Role: {game_state.currentRole}")
 
         # 1. Prepare the query
         if game_state.currentRole == Role.SPYMASTER:
@@ -342,7 +345,7 @@ async def forward(self):
 
             # Remove animation of recently revealed cards
             resetAnimations(self, game_state.cards)
-        
+
         your_team = game_state.currentTeam
         your_role = game_state.currentRole
         remaining_red = game_state.remainingRed
@@ -371,7 +374,6 @@ async def forward(self):
         # 2. Main Game Logic
         start_at = time.time()
         axon = self.metagraph.axons[to_uid]
-        bt.logging.info(f"⏩ Sending query to miner {to_uid}, {axon}")
 
         # 2.1 Query the participant
         if your_role == Role.SPYMASTER:
@@ -396,7 +398,9 @@ async def forward(self):
                 # Build decoy synapse with shuffled colors
                 # Build one shared fake board for all decoy uids: randomize red/blue only
                 decoy_colors = [card.color for card in game_state.cards]
-                rb_indices = [i for i, c in enumerate(decoy_colors) if c in ("red", "blue")]
+                rb_indices = [
+                    i for i, c in enumerate(decoy_colors) if c in ("red", "blue")
+                ]
                 rb_colors = [decoy_colors[i] for i in rb_indices]
                 random.shuffle(rb_colors)
                 for idx, color in zip(rb_indices, rb_colors):
@@ -425,7 +429,7 @@ async def forward(self):
                 for uid in targets:
                     if uid == to_uid:
                         # Real spymaster query with retries
-                        bt.logging.info(f"⏩ Sending game query to miner {uid}, {axon}")
+                        bt.logging.info(f"⏬ Sending game query to miner {uid}, {axon}")
                         for i in range(3):
                             started_at = time.time()
                             response = await self.dendrite(
@@ -442,7 +446,9 @@ async def forward(self):
                     else:
                         # Fire-and-forget decoys
                         try:
-                            bt.logging.info(f"⏩ Sending decoy query to miner {uid}, {axon}")
+                            bt.logging.info(
+                                f"🤫 Sending decoy query to miner {uid}, {axon}"
+                            )
                             asyncio.create_task(
                                 self.dendrite(
                                     axons=self.metagraph.axons[uid],
@@ -452,9 +458,7 @@ async def forward(self):
                                 )
                             )
                         except Exception as e:  # noqa: BLE001
-                            bt.logging.warning(
-                                f"Decoy send failed to {uid}: {e}"
-                            )
+                            bt.logging.warning(f"Decoy send failed to {uid}: {e}")
                 bt.logging.info(
                     f"📤 Distributed decoy boards to {len(decoy_uids)} miners"
                 )
@@ -476,11 +480,13 @@ async def forward(self):
         # 2.2 Check response
         if response is not None:
             bt.logging.info(
-                f"⏩ Received response from miner {to_uid} in {time.time() - start_at:.2f}s"
+                f"⏫ Received response from miner {to_uid} in {time.time() - start_at:.2f}s"
             )
         else:
             game_state.gameWinner = (
-                TeamColor.RED if game_state.currentTeam == TeamColor.BLUE else TeamColor.BLUE
+                TeamColor.RED
+                if game_state.currentTeam == TeamColor.BLUE
+                else TeamColor.BLUE
             )
             resetAnimations(self, game_state.cards)
             end_reason = "no_response"
@@ -515,7 +521,11 @@ async def forward(self):
                 else:
                     opp_uid = red_team["spymaster"]
                 opp_synapse = GameSynapse(
-                    your_team=TeamColor.RED if game_state.currentTeam == TeamColor.BLUE else TeamColor.BLUE,
+                    your_team=(
+                        TeamColor.RED
+                        if game_state.currentTeam == TeamColor.BLUE
+                        else TeamColor.BLUE
+                    ),
                     your_role="clue_validator",
                     remaining_red=remaining_red,
                     remaining_blue=remaining_blue,
@@ -524,7 +534,7 @@ async def forward(self):
                     cards=cards,
                 )
 
-                bt.logging.info(f"⏩ Sending clue check query to miner {opp_uid}")
+                bt.logging.info(f"⏬ Sending clue check query to miner {opp_uid}")
                 opp_response: GameSynapseOutput = await self.dendrite(
                     axons=self.metagraph.axons[opp_uid],
                     synapse=opp_synapse,
@@ -532,11 +542,13 @@ async def forward(self):
                     timeout=30,
                 )
                 if not opp_response or opp_response.clue_validity:
+                    bt.logging.info(f"✅ Clue '{clue}' with number {number} is valid")
                     return True, "Clue is valid"
 
                 bt.logging.warning(
                     f"Miner {opp_uid} reported that Clue '{clue}' with number {number} is invalid, reason: {opp_response.reasoning}"
                 )
+                bt.logging.info("Validator is checking clue validity with GPT-5...")
 
                 # Secondary rule check using GPT-5 (by validator)
                 messages = []
@@ -560,13 +572,17 @@ async def forward(self):
                         return False, result_json.get("reasoning", "Invalid clue")
                 except Exception as e:  # noqa: BLE001
                     bt.logging.warning(f"Rule validation error: {e}")
+
+                bt.logging.info(f"✅ Clue '{clue}' with number {number} is valid")
                 return True, "Clue is valid"
 
             bt.logging.info(f"Received clue from miner {to_uid}")
             bt.logging.info(f"Clue: {clue}, Number: {number}")
             bt.logging.info(f"Reasoning: {reasoning}")
 
-            board_words = [card.word for card in game_state.cards if not card.is_revealed]
+            board_words = [
+                card.word for card in game_state.cards if not card.is_revealed
+            ]
 
             game_state.currentClue = Clue(clueText=clue, number=number)
             game_state.currentClue.clueText = clue
@@ -580,11 +596,15 @@ async def forward(self):
                 )
                 # If the clue is invalid, the other team wins
                 game_state.gameWinner = (
-                    TeamColor.RED if game_state.currentTeam == TeamColor.BLUE else TeamColor.BLUE
+                    TeamColor.RED
+                    if game_state.currentTeam == TeamColor.BLUE
+                    else TeamColor.BLUE
                 )
                 resetAnimations(self, game_state.cards)
                 end_reason = "invalid_clue"
-                bt.logging.info(f"💀 Invalid clue! Game over. Winner: {game_state.gameWinner}")
+                bt.logging.info(
+                    f"💀 Invalid clue! Game over. Winner: {game_state.gameWinner}"
+                )
                 game_state.chatHistory.append(
                     ChatMessage(
                         sender=Role.SPYMASTER,
@@ -617,14 +637,20 @@ async def forward(self):
             bt.logging.info(f"Guessed cards: {guesses}")
             bt.logging.info(f"Reasoning: {reasoning}")
             if guesses is None:
-                bt.logging.info(f"❌ Invalid guesses '{guesses}' provided by miner {to_uid}.")
+                bt.logging.info(
+                    f"❌ Invalid guesses '{guesses}' provided by miner {to_uid}."
+                )
                 # If the guesses is invalid, the other team wins
                 game_state.gameWinner = (
-                    TeamColor.RED if game_state.currentTeam == TeamColor.BLUE else TeamColor.BLUE
+                    TeamColor.RED
+                    if game_state.currentTeam == TeamColor.BLUE
+                    else TeamColor.BLUE
                 )
                 resetAnimations(self, game_state.cards)
                 end_reason = "no_response"
-                bt.logging.info(f"❌ No guesses received! Game over. Winner: {game_state.gameWinner}")
+                bt.logging.info(
+                    f"❌ No guesses received! Game over. Winner: {game_state.gameWinner}"
+                )
                 game_state.chatHistory.append(
                     ChatMessage(
                         sender=Role.OPERATIVE,
@@ -654,7 +680,9 @@ async def forward(self):
                     game_state.gameWinner = TeamColor.RED
                     resetAnimations(self, game_state.cards)
                     end_reason = "red_all_cards"
-                    bt.logging.info(f"🎉 All red cards found! Winner: {game_state.gameWinner}")
+                    bt.logging.info(
+                        f"🎉 All red cards found! Winner: {game_state.gameWinner}"
+                    )
                     game_state.chatHistory.append(
                         ChatMessage(
                             sender=Role.OPERATIVE,
@@ -670,7 +698,9 @@ async def forward(self):
                     game_state.gameWinner = TeamColor.BLUE
                     resetAnimations(self, game_state.cards)
                     end_reason = "blue_all_cards"
-                    bt.logging.info(f"🎉 All blue cards found! Winner: {game_state.gameWinner}")
+                    bt.logging.info(
+                        f"🎉 All blue cards found! Winner: {game_state.gameWinner}"
+                    )
                     game_state.chatHistory.append(
                         ChatMessage(
                             sender=Role.OPERATIVE,
@@ -685,7 +715,9 @@ async def forward(self):
                 if card.color == "assassin":
                     choose_assasin = True
                     game_state.gameWinner = (
-                        TeamColor.RED if game_state.currentTeam == TeamColor.BLUE else TeamColor.BLUE
+                        TeamColor.RED
+                        if game_state.currentTeam == TeamColor.BLUE
+                        else TeamColor.BLUE
                     )
                     resetAnimations(self, game_state.cards)
                     end_reason = "assassin"
@@ -706,8 +738,8 @@ async def forward(self):
                 if card.color != game_state.currentTeam.value:
                     # If the card is not of our team color, we break
                     # This is to ensure that the operative only guesses cards of their team color
-                    bt.logging.info(
-                        f"Card {card.word} is not of team color {game_state.currentTeam.value}, breaking."
+                    bt.logging.warning(
+                        f"❌ Card {card.word} is not of team color {game_state.currentTeam.value}, breaking."
                     )
                     break
             if choose_assasin or game_state.gameWinner is not None:
@@ -753,8 +785,10 @@ async def forward(self):
                 self.score_store.increment_selection_count(hotkey, uid)
                 bt.logging.info(f"Incremented selection count for {uid}")
             except Exception as err:  # noqa: BLE001
-                bt.logging.error(f"Failed to increment selection count for {hotkey}: {err}")
-    
+                bt.logging.error(
+                    f"Failed to increment selection count for {hotkey}: {err}"
+                )
+
     # Adjust the scores based on responses from miners.
     rewards = get_rewards(
         self,
