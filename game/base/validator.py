@@ -352,9 +352,9 @@ class BaseValidatorNeuron(BaseNeuron):
             if window_scores[uid] > 0
         ]
 
-        if games_in_window < 300:
+        if games_in_window < 50:
             bt.logging.warning(
-                f"Not enough games in scoring window ({games_in_window} < 300); skipping set_weights."
+                f"Not enough games in scoring window ({games_in_window} < 50); skipping set_weights."
             )
             return
 

@@ -99,7 +99,7 @@ async def get_random_uids(self, k: int, exclude: List[int] = None) -> np.ndarray
 
     if len(selected) < k:
         bt.logging.warning(
-            f"Only selected {len(selected)} miners out of requested {k}."
+            f"Selected only {len(selected)} miner(s) out of requested {k}."
         )
     else:
         bt.logging.info(
