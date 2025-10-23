@@ -296,46 +296,45 @@ class BaseValidatorNeuron(BaseNeuron):
         now = time.time()
         since_ts = now - self.scoring_window_seconds
         latest_ts = self.score_store.latest_scores_all_timestamp()
-        if latest_ts:
-            age_seconds = now - latest_ts
-            if age_seconds > 3600:
-                bt.logging.warning(
-                    f"Latest synced score is older than 1 hour ({age_seconds:.0f}s). Burning emissions."
-                )
-                zero_weights = np.zeros(self.metagraph.n, dtype=np.float32)
-                if self.metagraph.n > 0:
-                    zero_weights[0] = 1.0
-                raw_weights = zero_weights
-                (
-                    processed_weight_uids,
-                    processed_weights,
-                ) = process_weights_for_netuid(
-                    uids=self.metagraph.uids,
-                    weights=raw_weights,
-                    netuid=self.config.netuid,
-                    subtensor=self.subtensor,
-                    metagraph=self.metagraph,
-                )
-                (
-                    uint_uids,
-                    uint_weights,
-                ) = convert_weights_and_uids_for_emit(
-                    uids=processed_weight_uids, weights=processed_weights
-                )
-                result, msg = self.subtensor.set_weights(
-                    wallet=self.wallet,
-                    netuid=self.config.netuid,
-                    uids=uint_uids,
-                    weights=uint_weights,
-                    wait_for_finalization=False,
-                    wait_for_inclusion=False,
-                    version_key=self.spec_version,
-                )
-                if result is True:
-                    bt.logging.info("set_weights on chain successfully (burned)")
-                else:
-                    bt.logging.error("set_weights failed (burned)", msg)
-                return
+        age_seconds = now - latest_ts
+        if age_seconds > 3600:
+            bt.logging.warning(
+                f"Latest synced score is older than 1 hour ({age_seconds:.0f}s). Burning emissions."
+            )
+            zero_weights = np.zeros(self.metagraph.n, dtype=np.float32)
+            if self.metagraph.n > 0:
+                zero_weights[0] = 1.0
+            raw_weights = zero_weights
+            (
+                processed_weight_uids,
+                processed_weights,
+            ) = process_weights_for_netuid(
+                uids=self.metagraph.uids,
+                weights=raw_weights,
+                netuid=self.config.netuid,
+                subtensor=self.subtensor,
+                metagraph=self.metagraph,
+            )
+            (
+                uint_uids,
+                uint_weights,
+            ) = convert_weights_and_uids_for_emit(
+                uids=processed_weight_uids, weights=processed_weights
+            )
+            result, msg = self.subtensor.set_weights(
+                wallet=self.wallet,
+                netuid=self.config.netuid,
+                uids=uint_uids,
+                weights=uint_weights,
+                wait_for_finalization=False,
+                wait_for_inclusion=False,
+                version_key=self.spec_version,
+            )
+            if result is True:
+                bt.logging.info("set_weights on chain successfully (burned)")
+            else:
+                bt.logging.error("set_weights failed (burned)", msg)
+            return
         games_in_window = self.score_store.games_in_window(since_ts)
         hotkey_totals = self.score_store.window_scores_by_hotkey(since_ts)
         window_scores = np.zeros(self.metagraph.n, dtype=np.float32)
