@@ -680,6 +680,17 @@ async def forward(self):
 
             # Update the game state
             choose_assasin = False
+
+            game_state.currentGuesses = guesses
+            game_state.chatHistory.append(
+                ChatMessage(
+                    sender=Role.OPERATIVE,
+                    message=f"Guessed cards: {', '.join(guesses)}",
+                    team=game_state.currentTeam,
+                    reasoning=reasoning,
+                    guesses=guesses,
+                )
+            )
             for guess in guesses:
                 card = next((c for c in game_state.cards if c.word == guess), None)
                 if card is None or card.is_revealed:
@@ -762,16 +773,6 @@ async def forward(self):
                     break
             if choose_assasin or game_state.gameWinner is not None:
                 break
-            game_state.currentGuesses = guesses
-            game_state.chatHistory.append(
-                ChatMessage(
-                    sender=Role.OPERATIVE,
-                    message=f"Guessed cards: {', '.join(guesses)}",
-                    team=game_state.currentTeam,
-                    reasoning=reasoning,
-                    guesses=guesses,
-                )
-            )
 
         # change the role
         game_state.previousRole = game_state.currentRole
