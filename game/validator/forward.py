@@ -444,7 +444,7 @@ async def forward(self):
                                 deserialize=True,
                                 timeout=30,
                             )
-                            if response is not None:
+                            if response or (time.time() - started_at) > 10:
                                 break
                         bt.logging.info(
                             f"📨 Real spymaster response received from {uid}: {response}"
@@ -480,7 +480,7 @@ async def forward(self):
                     deserialize=True,
                     timeout=30,
                 )
-                if response is not None:
+                if response or (time.time() - started_at) > 10:
                     break
 
         # 2.2 Check response
@@ -526,6 +526,15 @@ async def forward(self):
                     opp_uid = blue_team["spymaster"]
                 else:
                     opp_uid = red_team["spymaster"]
+                clue_validator_cards = [
+                    CardType(
+                        word=card.word,
+                        color=card.color if card.is_revealed else None,
+                        is_revealed=card.is_revealed,
+                        was_recently_revealed=card.was_recently_revealed,
+                    )
+                    for card in game_state.cards
+                ]
                 opp_synapse = GameSynapse(
                     your_team=(
                         TeamColor.RED
@@ -537,7 +546,7 @@ async def forward(self):
                     remaining_blue=remaining_blue,
                     your_clue=clue,
                     your_number=number,
-                    cards=cards,
+                    cards=clue_validator_cards,
                 )
 
                 bt.logging.info(f"⏬ Sending clue check query to miner {opp_uid}")
