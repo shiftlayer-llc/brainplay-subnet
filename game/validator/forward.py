@@ -311,9 +311,15 @@ async def forward(self):
     roomId = await create_room(self, game_state)
     if roomId is None:
         bt.logging.error("Failed to create room, exiting.")
+        time.sleep(10)
         return
 
     # ===============GAME LOOP=======================
+    bt.logging.info("╔══════════════════════════════════════════════════════════════╗")
+    bt.logging.info("║                     🚀  GAME STARTING  🚀                     ║")
+    bt.logging.info(
+        "╚══════════════════════════════════════════════════════════════╝\n"
+    )
     while game_state.gameWinner is None:
         bt.logging.info("=" * 50)
         bt.logging.info(f"Game step {game_step + 1}")
@@ -676,6 +682,7 @@ async def forward(self):
                     game_state.remainingRed -= 1
                 elif card.color == "blue":
                     game_state.remainingBlue -= 1
+
                 if game_state.remainingRed == 0:
                     game_state.gameWinner = TeamColor.RED
                     resetAnimations(self, game_state.cards)
@@ -712,6 +719,7 @@ async def forward(self):
                     )
                     await update_room(self, game_state, roomId)
                     break
+
                 if card.color == "assassin":
                     choose_assasin = True
                     game_state.gameWinner = (
@@ -735,6 +743,7 @@ async def forward(self):
                     )
                     await update_room(self, game_state, roomId)
                     break
+
                 if card.color != game_state.currentTeam.value:
                     # If the card is not of our team color, we break
                     # This is to ensure that the operative only guesses cards of their team color
@@ -773,6 +782,13 @@ async def forward(self):
         await update_room(self, game_state, roomId)
 
     # Game over
+    bt.logging.info("╔══════════════════════════════════════════════════════════════╗")
+    bt.logging.info(
+        f"\t\t🎉 GAME OVER 🏆 WINNER: {game_state.gameWinner.value.upper()} TEAM"
+    )
+    bt.logging.info(
+        "╚══════════════════════════════════════════════════════════════╝\n"
+    )
     ended_at = time.time()
     winner_value = (
         game_state.gameWinner.value if game_state.gameWinner is not None else None

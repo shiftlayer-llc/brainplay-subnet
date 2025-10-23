@@ -10,9 +10,15 @@ async def get_random_uids(self, k: int, exclude: List[int] = None) -> np.ndarray
     """Returns up to ``k`` available uids following selection-count and score rules."""
 
     exclude_set = {int(uid) for uid in (exclude or [])}
+    exclude_set.update(
+        int(uid)
+        for uid in self.metagraph.uids
+        if self.metagraph.S[uid] < self.config.neuron.minimum_stake_requirement
+    )
+    uids_to_ping = [uid for uid in self.metagraph.uids if uid not in exclude_set]
 
     successful_uids = await ping_uids(
-        self.dendrite, self.metagraph, self.metagraph.uids, timeout=30
+        self.dendrite, self.metagraph, uids_to_ping, timeout=30
     )
     successful_set = {int(uid) for uid in successful_uids}
 
