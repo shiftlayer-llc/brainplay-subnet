@@ -23,12 +23,13 @@ import bittensor as bt
 import aiohttp
 import json
 from game.protocol import GameSynapse, GameSynapseOutput
+from game.utils import game, opSysPrompt, spySysPrompt
 from game.utils.ruleSysPrompt import ruleSysPrompt
 from game.validator.reward import get_rewards
 from game.utils.uids import get_random_uids
 import random
 import typing
-from game.utils.game import TParticipant
+from game.utils.game import Competition, TParticipant
 from game.utils.game import (
     GameState,
     Role,
@@ -47,9 +48,9 @@ load_dotenv()  # take environment variables from .env.
 client = OpenAI(api_key=os.environ.get("OPENAI_KEY"))
 
 
-def organize_team(self, uids):
+def organize_team(self, competition, uids):
     """
-    Organize the team with 4 miners randomly
+    Organize the team with 2 miners randomly
 
     Args:
         uids (list[int]): The list of miner uids
@@ -57,9 +58,12 @@ def organize_team(self, uids):
     Returns:
         tuple[dict[str, int], dict[str, int]]: The red team and the blue team
     """
-    # devide into 2 teams randomly
-    team1 = {"spymaster": uids[0], "operative": uids[1]}
-    team2 = {"spymaster": uids[2], "operative": uids[3]}
+    if competition == Competition.CLUE_COMPETITION:
+        team1 = {"spymaster": uids[0], "operative": self.uid}
+        team2 = {"spymaster": uids[1], "operative": self.uid}
+    else:
+        team1 = {"spymaster": self.uid, "operative": uids[0]}
+        team2 = {"spymaster": self.uid, "operative": uids[1]}
     return team1, team2
 
 
@@ -81,6 +85,7 @@ async def create_room(self, game_state: GameState):
         async with aiohttp.ClientSession() as session:
             payload = {
                 "validatorKey": self.wallet.hotkey.ss58_address,
+                "competition": game_state.competition.value,
                 "cards": [
                     {
                         "word": card.word,
@@ -144,6 +149,7 @@ async def update_room(self, game_state: GameState, roomId):
     try:
         async with aiohttp.ClientSession() as session:
             payload = {
+                "competition": game_state.competition.value,
                 "validatorKey": self.wallet.hotkey.ss58_address,
                 "cards": [
                     {
@@ -249,6 +255,87 @@ async def remove_room(self, roomId):
         bt.logging.error(f"Unexpected error deleting room {roomId}: {e}")
 
 
+async def get_llm_response(synapse: GameSynapse) -> GameSynapseOutput:
+
+    bt.logging.info("💌 Received GameSynapse request")
+
+    async def get_gpt5_response(messages):
+        try:
+            result = client.responses.create(
+                model="gpt-5",
+                input=messages,
+                reasoning={"effort": "medium"},  # Optional: control reasoning effort
+            )
+            return result.output_text
+        except Exception as e:
+            bt.logging.error(f"Error fetching response from GPT-5: {e}")
+            return None
+
+    # Build board and clue strings outside the f-string to avoid backslash-in-expression errors.
+    messages = []
+    if synapse.your_role == "operative":
+        board = [
+            {
+                "word": card.word,
+                "isRevealed": card.is_revealed,
+                "color": card.color if card.is_revealed else None,
+            }
+            for card in synapse.cards
+        ]
+        clue_block = f"Your Clue: {synapse.your_clue}\nNumber: {synapse.your_number}"
+    else:
+        board = synapse.cards
+        clue_block = ""
+
+    userPrompt = f"""
+    ### Current Game State
+    Your Team: {synapse.your_team}
+    Your Role: {synapse.your_role}
+    Red Cards Left to Guess: {synapse.remaining_red}
+    Blue Cards Left to Guess: {synapse.remaining_blue}
+
+    Board: {board}
+
+    {clue_block}"""
+    messages = []
+    messages.append(
+        {
+            "role": "system",
+            "content": (
+                spySysPrompt if synapse.your_role == "spymaster" else opSysPrompt
+            ),
+        }
+    )
+    messages.append({"role": "user", "content": userPrompt})
+
+    response_str = await get_gpt5_response(messages)
+    response_dict = json.loads(response_str)
+    if "clue" in response_dict:
+        clue = response_dict["clue"]
+    else:
+        clue = None
+    if "number" in response_dict:
+        number = response_dict["number"]
+    else:
+        number = None
+    if "reasoning" in response_dict:
+        reasoning = response_dict["reasoning"]
+    else:
+        reasoning = None
+
+    if "guesses" in response_dict:
+        guesses = response_dict["guesses"]
+    else:
+        guesses = None
+
+    output = GameSynapseOutput(
+        clue_text=clue, number=number, reasoning=reasoning, guesses=guesses
+    )
+    bt.logging.info(f"🚀 successfully get response from llm: {output}")
+
+    return output
+
+
 async def forward(self):
     """
     This method is invoked by the validator at each time step.
@@ -259,15 +346,18 @@ async def forward(self):
         self (bittensor.neuron.Neuron): The neuron instance containing all necessary state information for the validator.
 
     """
-    # Select 4 miners randomly and organize 2 teams
-    miner_uids, selected_hotkeys = await get_random_uids(
-        self, k=self.config.neuron.sample_size
+    competition = random.choice(
+        [Competition.CLUE_COMPETITION, Competition.GUESS_COMPETITION]
     )
-    # Exeption handling when number of miners less than 4
-    if len(miner_uids) < 4:
+
+    miner_uids, hotkeys_to_increase = await get_random_uids(
+        self, competition=competition, k=2
+    )
+    # Exception handling when number of miners less than 2
+    if len(miner_uids) < 2:
         return
 
-    (red_team, blue_team) = organize_team(self, miner_uids)
+    (red_team, blue_team) = organize_team(self, competition, miner_uids)
     bt.logging.info(f"\033[91mRed Team: {red_team}\033[0m")
     bt.logging.info(f"\033[94mBlue Team: {blue_team}\033[0m")
 
@@ -285,7 +375,11 @@ async def forward(self):
     for team in [red_team, blue_team]:
         participants.append(
             TParticipant(
-                name="Miner " + str(team["spymaster"]),
+                name=(
+                    ("Miner " + str(team["spymaster"]))
+                    if team["spymaster"] != self.uid
+                    else "Validator"
+                ),
                 hotkey=self.metagraph.axons[team["spymaster"]].hotkey,
                 team=TeamColor.RED if team == red_team else TeamColor.BLUE,
                 role=Role.SPYMASTER,
@@ -293,7 +387,11 @@ async def forward(self):
         )
         participants.append(
             TParticipant(
-                name="Miner " + str(team["operative"]),
+                name=(
+                    ("Miner " + str(team["operative"]))
+                    if team["operative"] != self.uid
+                    else "Validator"
+                ),
                 hotkey=self.metagraph.axons[team["operative"]].hotkey,
                 team=TeamColor.RED if team == red_team else TeamColor.BLUE,
                 role=Role.OPERATIVE,
@@ -303,7 +401,7 @@ async def forward(self):
     # * Initialize game
     game_step = 0
     started_at = time.time()
-    game_state = GameState(participants=participants)
+    game_state = GameState(competition=competition, participants=participants)
     end_reason = "completed"
 
     # Create new room via API call
@@ -317,6 +415,9 @@ async def forward(self):
     # ===============GAME LOOP=======================
     bt.logging.info("╔══════════════════════════════════════════════════════════════╗")
     bt.logging.info("║                     🚀  GAME STARTING  🚀                     ║")
+    bt.logging.info(
+        f"║                Competition: {competition.value}                ║"
+    )
     bt.logging.info(
         "╚══════════════════════════════════════════════════════════════╝\n"
     )
@@ -378,117 +479,43 @@ async def forward(self):
         )
 
         # 2. Main Game Logic
-        start_at = time.time()
-        axon = self.metagraph.axons[to_uid]
-
+        started_at = time.time()
         # 2.1 Query the participant
-        if your_role == Role.SPYMASTER:
-            try:
-                # Select decoys fresh each spymaster turn
-                decoy_uids, _ = await get_random_uids(self, k=10)
-                # Exclude active players and direct recipient
-                decoy_uids = [
-                    uid for uid in decoy_uids if uid not in miner_uids and uid != to_uid
-                ]
-                bt.logging.info(f"Decoy uids: {decoy_uids}")
-                # If fewer than 10, pad with random others from metagraph
-                # if len(decoy_uids) < 10:
-                #     candidates = [
-                #         uid
-                #         for uid in range(self.metagraph.n)
-                #         if uid not in miner_uids and uid not in decoy_uids and uid != to_uid
-                #     ]
-                #     random.shuffle(candidates)
-                #     decoy_uids.extend(candidates[: 10 - len(decoy_uids)])
+        response = None
+        is_miner_turn = (
+            game_state.competition == Competition.CLUE_COMPETITION
+            and your_role == Role.SPYMASTER
+            or game_state.competition == Competition.GUESS_COMPETITION
+            and your_role == Role.OPERATIVE
+        )
 
-                # Build decoy synapse with shuffled colors
-                # Build one shared fake board for all decoy uids: randomize red/blue only
-                decoy_colors = [card.color for card in game_state.cards]
-                rb_indices = [
-                    i for i, c in enumerate(decoy_colors) if c in ("red", "blue")
-                ]
-                rb_colors = [decoy_colors[i] for i in rb_indices]
-                random.shuffle(rb_colors)
-                for idx, color in zip(rb_indices, rb_colors):
-                    decoy_colors[idx] = color
-                decoy_cards = [
-                    CardType(
-                        word=card.word,
-                        color=decoy_colors[i],
-                        is_revealed=card.is_revealed,
-                        was_recently_revealed=card.was_recently_revealed,
-                    )
-                    for i, card in enumerate(game_state.cards)
-                ]
-                decoy_synapse = GameSynapse(
-                    your_team=game_state.currentTeam,
-                    your_role=Role.SPYMASTER,
-                    remaining_red=game_state.remainingRed,
-                    remaining_blue=game_state.remainingBlue,
-                    your_clue=None,
-                    your_number=None,
-                    cards=decoy_cards,
-                )
-
-                targets = [to_uid] + decoy_uids
-                response = None
-                for uid in targets:
-                    if uid == to_uid:
-                        # Real spymaster query with retries
-                        bt.logging.info(f"⏬ Sending game query to miner {uid}, {axon}")
-                        for i in range(3):
-                            started_at = time.time()
-                            response = await self.dendrite(
-                                axons=self.metagraph.axons[uid],
-                                synapse=synapse,
-                                deserialize=True,
-                                timeout=30,
-                            )
-                            if response or (time.time() - started_at) > 10:
-                                break
-                        bt.logging.info(
-                            f"📨 Real spymaster response received from {uid}: {response}"
-                        )
-                    else:
-                        # Fire-and-forget decoys
-                        try:
-                            bt.logging.info(
-                                f"🤫 Sending decoy query to miner {uid}, {axon}"
-                            )
-                            asyncio.create_task(
-                                self.dendrite(
-                                    axons=self.metagraph.axons[uid],
-                                    synapse=decoy_synapse,
-                                    deserialize=False,
-                                    timeout=5,
-                                )
-                            )
-                        except Exception as e:  # noqa: BLE001
-                            bt.logging.warning(f"Decoy send failed to {uid}: {e}")
-                bt.logging.info(
-                    f"📤 Distributed decoy boards to {len(decoy_uids)} miners"
-                )
-            except Exception as e:  # noqa: BLE001
-                bt.logging.warning(f"Failed unified spymaster loop: {e}")
-        else:
-            # retry 3 time to avoid broken pipe for operative
+        if not is_miner_turn:
+            axon = self.metagraph.axons[to_uid]
+            bt.logging.info(f"⏬ Sending game query to miner {to_uid}, {axon}")
             for i in range(3):
-                started_at = time.time()
+                sent_at = time.time()
                 response = await self.dendrite(
                     axons=axon,
                     synapse=synapse,
                     deserialize=True,
                     timeout=30,
                 )
-                if response or (time.time() - started_at) > 10:
+                if response or (time.time() - sent_at) > 3:
                     break
+                bt.logging.warning(f"⏳ No response from miner {to_uid} ({i+1}/3)")
+        else:
+            bt.logging.info(f"⏬ Sending game query to LLM for role {your_role}")
+            response = await get_llm_response(synapse)
+            if response is None:
+                bt.logging.error("Failed to get response from LLM, exiting.")
+                time.sleep(10)
+                return
 
         # 2.2 Check response
-        if response is not None:
-            bt.logging.info(
-                f"⏫ Received response from miner {to_uid} in {time.time() - start_at:.2f}s"
-            )
-        else:
+        bt.logging.info(
+            f"⏫ Response from miner {to_uid} took {time.time() - sent_at:.2f}s"
+        )
+        if response is None:
             game_state.gameWinner = (
                 TeamColor.RED
                 if game_state.currentTeam == TeamColor.BLUE
@@ -521,51 +548,7 @@ async def forward(self):
             async def check_valid_clue(clue, number, board_words):
                 if clue is None or number is None:
                     return False, "Clue or number is None"
-                # Check if the clue is valid using opponent spymaster
-                if game_state.currentTeam == TeamColor.RED:
-                    opp_uid = blue_team["spymaster"]
-                else:
-                    opp_uid = red_team["spymaster"]
-                clue_validator_cards = [
-                    CardType(
-                        word=card.word,
-                        color=card.color if card.is_revealed else None,
-                        is_revealed=card.is_revealed,
-                        was_recently_revealed=card.was_recently_revealed,
-                    )
-                    for card in game_state.cards
-                ]
-                opp_synapse = GameSynapse(
-                    your_team=(
-                        TeamColor.RED
-                        if game_state.currentTeam == TeamColor.BLUE
-                        else TeamColor.BLUE
-                    ),
-                    your_role="clue_validator",
-                    remaining_red=remaining_red,
-                    remaining_blue=remaining_blue,
-                    your_clue=clue,
-                    your_number=number,
-                    cards=clue_validator_cards,
-                )
 
-                bt.logging.info(f"⏬ Sending clue check query to miner {opp_uid}")
-                opp_response: GameSynapseOutput = await self.dendrite(
-                    axons=self.metagraph.axons[opp_uid],
-                    synapse=opp_synapse,
-                    deserialize=True,
-                    timeout=30,
-                )
-                if not opp_response or opp_response.clue_validity:
-                    bt.logging.info(f"✅ Clue '{clue}' with number {number} is valid")
-                    return True, "Clue is valid"
-
-                bt.logging.warning(
-                    f"Miner {opp_uid} reported that Clue '{clue}' with number {number} is invalid, reason: {opp_response.reasoning}"
-                )
-                bt.logging.info("Validator is checking clue validity with GPT-5...")
-
-                # Secondary rule check using GPT-5 (by validator)
                 messages = []
                 messages.append({"role": "system", "content": ruleSysPrompt})
                 messages.append(
@@ -603,23 +586,17 @@ async def forward(self):
             game_state.currentClue.clueText = clue
             game_state.currentClue.number = number
 
-            valid, reason = await check_valid_clue(clue, number, board_words)
+            is_valid_clue, reason = (
+                (await check_valid_clue(clue, number, board_words))
+                if is_miner_turn
+                else (True, "validator clue")
+            )
 
-            if not valid:
+            if not is_valid_clue:
                 bt.logging.info(
                     f"❌ Invalid clue '{clue}' provided by miner {to_uid} for board words {board_words}. Reason: {reason}"
                 )
-                # If the clue is invalid, the other team wins
-                game_state.gameWinner = (
-                    TeamColor.RED
-                    if game_state.currentTeam == TeamColor.BLUE
-                    else TeamColor.BLUE
-                )
-                resetAnimations(self, game_state.cards)
-                end_reason = "invalid_clue"
-                bt.logging.info(
-                    f"💀 Invalid clue! Game over. Winner: {game_state.gameWinner}"
-                )
+                bt.logging.info(f"Penalizing team {game_state.currentTeam}.")
                 game_state.chatHistory.append(
                     ChatMessage(
                         sender=Role.SPYMASTER,
@@ -630,20 +607,18 @@ async def forward(self):
                         reasoning=reasoning,
                     )
                 )
-
-                await update_room(self, game_state, roomId)
-                break
-
-            game_state.chatHistory.append(
-                ChatMessage(
-                    sender=Role.SPYMASTER,
-                    message=f"Gave clue '{clue}' with number {number}",
-                    team=game_state.currentTeam,
-                    clueText=clue,
-                    number=number,
-                    reasoning=reasoning,
+                response.clue_text = None
+            else:
+                game_state.chatHistory.append(
+                    ChatMessage(
+                        sender=Role.SPYMASTER,
+                        message=f"Gave clue '{clue}' with number {number}",
+                        team=game_state.currentTeam,
+                        clueText=clue,
+                        number=number,
+                        reasoning=reasoning,
+                    )
                 )
-            )
 
         elif game_state.currentRole == Role.OPERATIVE:
             # Get the guessed cards from the response
@@ -713,7 +688,7 @@ async def forward(self):
                     game_state.chatHistory.append(
                         ChatMessage(
                             sender=Role.OPERATIVE,
-                            message=f"🎉 All red cards found! Winner: {game_state.gameWinner.value.capitalize()} Team",
+                            message=f"🎉 All red cards found!",
                             team=game_state.currentTeam,
                             guesses=guesses,
                             reasoning=reasoning,
@@ -731,7 +706,7 @@ async def forward(self):
                     game_state.chatHistory.append(
                         ChatMessage(
                             sender=Role.OPERATIVE,
-                            message=f"🎉 All blue cards found! Winner: {game_state.gameWinner.value.capitalize()} Team",
+                            message=f"🎉 All blue cards found!",
                             team=game_state.currentTeam,
                             guesses=guesses,
                             reasoning=reasoning,
@@ -755,7 +730,7 @@ async def forward(self):
                     game_state.chatHistory.append(
                         ChatMessage(
                             sender=Role.OPERATIVE,
-                            message=f"💀 Assassin card '{card.word}' found! Game over. Winner: {game_state.gameWinner.value.capitalize()} Team",
+                            message=f"💀 Assassin card '{card.word}' found! Game over.",
                             team=game_state.currentTeam,
                             guesses=guesses,
                             reasoning=reasoning,
@@ -779,7 +754,13 @@ async def forward(self):
         game_state.previousTeam = game_state.currentTeam
 
         if game_state.currentRole == Role.SPYMASTER:
-            game_state.currentRole = Role.OPERATIVE
+            if not is_valid_clue:
+                if game_state.currentTeam == TeamColor.RED:
+                    game_state.currentTeam = TeamColor.BLUE
+                else:
+                    game_state.currentTeam = TeamColor.RED
+            else:
+                game_state.currentRole = Role.OPERATIVE
         else:
             game_state.currentRole = Role.SPYMASTER
             # change the team after operative moved
@@ -803,12 +784,15 @@ async def forward(self):
     winner_value = (
         game_state.gameWinner.value if game_state.gameWinner is not None else None
     )
-    if winner_value and end_reason != "no_response":
-        # Increase selection count
-        for hotkey in selected_hotkeys:
+
+    if winner_value:
+        # Increase selection count after the game
+        for hotkey in hotkeys_to_increase:
             try:
                 uid = self.metagraph.hotkeys.index(hotkey)
-                self.score_store.increment_selection_count(hotkey, uid)
+                self.score_store.increment_selection_count(
+                    hotkey, uid, competition.value
+                )
                 bt.logging.info(f"Incremented selection count for {uid}")
             except Exception as err:  # noqa: BLE001
                 bt.logging.error(
@@ -836,6 +820,7 @@ async def forward(self):
     try:
         self.score_store.record_game(
             room_id=roomId,
+            competition=competition.value,
             rs=rs_hotkey,
             ro=ro_hotkey,
             bs=bs_hotkey,
