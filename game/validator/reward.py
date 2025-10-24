@@ -16,6 +16,7 @@
 # THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
+from game.utils.game import Competition
 import numpy as np
 from typing import List, Dict
 import bittensor as bt
@@ -40,6 +41,7 @@ import bittensor as bt
 
 def get_rewards(
     self,
+    competition,
     winner,
     red_team: Dict,
     blue_team: Dict,
@@ -58,29 +60,20 @@ def get_rewards(
     Returns:
     - np.ndarray: An array of rewards for the team members based on the game outcome.
     """
-    penalties = {"invalid_clue": -0.5, "no_response": -1.0, "assassin": -0.2}
-    scale = {
-        "invalid_clue": 0.5,
-        "no_response": 0.0,  # If no response, no one gets points
-        "assassin": 0.8,
-    }
-    team_role_to_index = {
-        ("red", "spymaster"): 0,
-        ("red", "operative"): 1,
-        ("blue", "spymaster"): 2,
-        ("blue", "operative"): 3,
-    }
-    current_index = team_role_to_index.get((current_team.value, current_role.value))
     if winner == "red":
-        rewards = np.array([1.0, 1.0, 0.0, 0.0])
+        if competition == Competition.CLUE_COMPETITION:
+            rewards = np.array([1.0, 0, 0.0, 0.0])
+        else:  # GUESS_COMPETITION
+            rewards = np.array([0, 1.0, 0.0, 0.0])
     elif winner == "blue":
-        rewards = np.array([0.0, 0.0, 1.0, 1.0])
+        if competition == Competition.CLUE_COMPETITION:
+            rewards = np.array([0.0, 0.0, 1.0, 0.0])
+        else:  # GUESS_COMPETITION
+            rewards = np.array([0.0, 0.0, 0.0, 1.0])
     else:
         rewards = np.array([0.0, 0.0, 0.0, 0.0])
-    if end_reason in penalties:
-        rewards = rewards * scale[end_reason]
-        rewards[current_index] += penalties[end_reason]
+
     bt.logging.info(
-        f"rewards: {rewards}, reason: {end_reason}, current_index: {current_index}, current_team: {current_team}, current_role: {current_role}"
+        f"rewards: {rewards}, reason: {end_reason}, current_team: {current_team}, current_role: {current_role}"
     )
     return rewards
