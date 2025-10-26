@@ -295,7 +295,10 @@ class BaseValidatorNeuron(BaseNeuron):
         """
 
         now = time.time()
-        since_ts = now - self.scoring_window_seconds
+        blocks_since_epoch = self.subtensor.get_subnet_info(self.config.netuid)
+
+        end_ts = self.subtensor.get_timestamp(self.subtensor.block - blocks_since_epoch)
+        since_ts = end_ts - self.scoring_window_seconds
 
         latest_ts = self.score_store.latest_scores_all_timestamp()
 
@@ -315,7 +318,7 @@ class BaseValidatorNeuron(BaseNeuron):
             weights = np.zeros(self.metagraph.n, dtype=np.float32)
             comp_value = competition.value
 
-            comp_games = self.score_store.games_in_window(since_ts, comp_value)
+            comp_games = self.score_store.games_in_window(since_ts, end_ts, comp_value)
             if comp_games < 300:
                 bt.logging.warning(
                     f"Not enough games for competition {comp_value}; skipping its allocation. ({comp_games} < 300)"

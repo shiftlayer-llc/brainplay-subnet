@@ -350,12 +350,14 @@ class ScoreStore:
         return int(row[0])
 
     def games_in_window(
-        self, since_ts: float, competition: Optional[str] = None
+        self, since_ts: float, end_ts: float, competition: Optional[str] = None
     ) -> int:
         with self._lock:
             cur = self.conn.cursor()
-            params = [int(since_ts)]
-            query = "SELECT COUNT(*) FROM scores_all WHERE ended_at >= ?"
+            params = [int(since_ts), int(end_ts)]
+            query = (
+                "SELECT COUNT(*) FROM scores_all WHERE ended_at >= ? AND ended_at < ?"
+            )
             if competition is not None:
                 query += " AND competition = ?"
                 params.append(competition)
