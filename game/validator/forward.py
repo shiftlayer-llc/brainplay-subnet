@@ -23,7 +23,8 @@ import bittensor as bt
 import aiohttp
 import json
 from game.protocol import GameSynapse, GameSynapseOutput
-from game.utils import game, opSysPrompt, spySysPrompt
+from game.utils.opSysPrompt import opSysPrompt
+from game.utils.spySysPrompt import spySysPrompt
 from game.utils.ruleSysPrompt import ruleSysPrompt
 from game.validator.reward import get_rewards
 from game.utils.uids import get_random_uids
@@ -127,7 +128,8 @@ async def create_room(self, game_state: GameState):
                     return None
                 else:
                     response_text = await response.text()
-                    bt.logging.info(f"Room created successfully: {response_text}")
+                    bt.logging.info(f"Room created successfully")
+                    bt.logging.debug(f"Room creation response: {response_text}")
                     try:
                         return json.loads(response_text)["data"]["id"]
                     except (json.JSONDecodeError, KeyError) as e:
@@ -259,12 +261,12 @@ async def get_llm_response(synapse: GameSynapse) -> GameSynapseOutput:
 
     bt.logging.info("💌 Received GameSynapse request")
 
-    async def get_gpt5_response(messages):
+    async def get_gpt5_response(messages, effort="minimal"):
         try:
             result = client.responses.create(
                 model="gpt-5",
                 input=messages,
-                reasoning={"effort": "medium"},  # Optional: control reasoning effort
+                reasoning={"effort": effort},  # Optional: control reasoning effort
             )
             return result.output_text
         except Exception as e:
@@ -308,7 +310,10 @@ async def get_llm_response(synapse: GameSynapse) -> GameSynapseOutput:
     )
     messages.append({"role": "user", "content": userPrompt})
 
-    response_str = await get_gpt5_response(messages)
+    response_str = await get_gpt5_response(
+        messages
+    )  # , effort = "medium" if synapse.your_role == "spymaster" else "minimal")
+    bt.logging.debug(f"💬 LLM Response: {response_str}")
     response_dict = json.loads(response_str)
     if "clue" in response_dict:
         clue = response_dict["clue"]
@@ -346,9 +351,9 @@ async def forward(self):
         self (bittensor.neuron.Neuron): The neuron instance containing all necessary state information for the validator.
 
     """
-    competition = random.choice(
-        [Competition.CLUE_COMPETITION, Competition.GUESS_COMPETITION]
-    )
+    competition = [Competition.CLUE_COMPETITION, Competition.GUESS_COMPETITION][
+        self.step % 2
+    ]
 
     miner_uids, hotkeys_to_increase = await get_random_uids(
         self, competition=competition, k=2
@@ -414,7 +419,7 @@ async def forward(self):
 
     # ===============GAME LOOP=======================
     bt.logging.info("╔══════════════════════════════════════════════════════════════╗")
-    bt.logging.info("║                     🚀  GAME STARTING  🚀                     ║")
+    bt.logging.info("║                     🚀  GAME STARTING  🚀                    ║")
     bt.logging.info(
         f"║                Competition: {competition.value}                ║"
     )
@@ -489,7 +494,7 @@ async def forward(self):
             and your_role == Role.OPERATIVE
         )
 
-        if not is_miner_turn:
+        if is_miner_turn:
             axon = self.metagraph.axons[to_uid]
             bt.logging.info(f"⏬ Sending game query to miner {to_uid}, {axon}")
             for i in range(3):
@@ -513,7 +518,7 @@ async def forward(self):
 
         # 2.2 Check response
         bt.logging.info(
-            f"⏫ Response from miner {to_uid} took {time.time() - sent_at:.2f}s"
+            f"⏫ Response from miner {to_uid} took {time.time() - started_at:.2f}s"
         )
         if response is None:
             game_state.gameWinner = (
@@ -773,12 +778,12 @@ async def forward(self):
         await update_room(self, game_state, roomId)
 
     # Game over
-    bt.logging.info("╔══════════════════════════════════════════════════════════════╗")
+    bt.logging.info("════════════════════════════════════════════════════════════════")
     bt.logging.info(
-        f"\t\t🎉 GAME OVER 🏆 WINNER: {game_state.gameWinner.value.upper()} TEAM"
+        f"               🎉 GAME OVER 🏆 WINNER: {game_state.gameWinner.value.upper()} TEAM                "
     )
     bt.logging.info(
-        "╚══════════════════════════════════════════════════════════════╝\n"
+        "════════════════════════════════════════════════════════════════\n"
     )
     ended_at = time.time()
     winner_value = (
@@ -802,6 +807,7 @@ async def forward(self):
     # Adjust the scores based on responses from miners.
     rewards = get_rewards(
         self,
+        competition=competition,
         winner=game_state.gameWinner.value if game_state.gameWinner else None,
         red_team=red_team,
         blue_team=blue_team,
