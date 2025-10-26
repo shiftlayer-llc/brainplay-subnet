@@ -84,7 +84,7 @@ def add_args(cls, parser):
         "--neuron.minimum_stake_requirement",
         type=int,
         help="Minimum amount of stake needed to run miner.",
-        default=1_000,
+        default=0,
     )
 
     parser.add_argument(
