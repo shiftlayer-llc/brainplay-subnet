@@ -81,6 +81,13 @@ def add_args(cls, parser):
     )
 
     parser.add_argument(
+        "--neuron.minimum_stake_requirement",
+        type=int,
+        help="Minimum amount of stake needed to run miner.",
+        default=0,
+    )
+
+    parser.add_argument(
         "--neuron.epoch_length",
         type=int,
         help="The default epoch length (how often we set weights, measured in 12 second blocks).",
@@ -162,7 +169,7 @@ def add_miner_args(cls, parser):
         "--blacklist.minimum_stake_requirement",
         type=int,
         help="Minimum amount of stake needed to send request to miners.",
-        default=3_000,
+        default=10_000,
     )
 
     parser.add_argument(

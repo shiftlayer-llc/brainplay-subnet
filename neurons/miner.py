@@ -24,7 +24,6 @@ import bittensor as bt
 import os
 from dotenv import load_dotenv
 import game
-from game.utils.ruleSysPrompt import ruleSysPrompt
 from game.utils.spySysPrompt import spySysPrompt
 from game.utils.opSysPrompt import opSysPrompt
 
@@ -177,29 +176,15 @@ class Miner(BaseMinerNeuron):
 
         {clue_block}"""
         messages = []
-        if synapse.your_role == "clue_validator":
-            # If the spymaster has already given a opponent's clue, validate it.
-            bt.logging.info("Validating opponent's clue...", synapse.your_clue)
-            board_words = [card.word for card in synapse.cards if not card.is_revealed]
-            messages.append({"role": "system", "content": ruleSysPrompt})
-            messages.append(
-                {
-                    "role": "user",
-                    "content": f"Clue: {synapse.your_clue}, Number: {synapse.your_number}, Board Words: {board_words}",
-                }
-            )
-        else:
-            messages.append(
-                {
-                    "role": "system",
-                    "content": (
-                        spySysPrompt
-                        if synapse.your_role == "spymaster"
-                        else opSysPrompt
-                    ),
-                }
-            )
-            messages.append({"role": "user", "content": userPrompt})
+        messages.append(
+            {
+                "role": "system",
+                "content": (
+                    spySysPrompt if synapse.your_role == "spymaster" else opSysPrompt
+                ),
+            }
+        )
+        messages.append({"role": "user", "content": userPrompt})
 
         response_str = await get_gpt5_response(messages)
         response_dict = json.loads(response_str)
@@ -236,7 +221,7 @@ class Miner(BaseMinerNeuron):
             guesses=guesses,
             clue_validity=valid,
         )
-        bt.logging.info(f"🚀 successfully get response from llm: {synapse.output}")
+        bt.logging.info(f"🚀 llm response: {synapse.output}")
 
         return synapse
 

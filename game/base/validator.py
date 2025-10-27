@@ -39,6 +39,7 @@ from game.base.utils.weight_utils import (
 )  # TODO: Replace when bittensor switches to numpy
 from game.mock import MockDendrite
 from game.utils.config import add_validator_args
+from game.utils.game import Competition
 from game.validator.score_store import ScoreStore
 from game.validator.scoring_config import (
     parse_interval_to_seconds,
@@ -294,190 +295,113 @@ class BaseValidatorNeuron(BaseNeuron):
         """
 
         now = time.time()
-        since_ts = now - self.scoring_window_seconds
+        blocks_since_epoch = self.subtensor.get_subnet_info(
+            self.config.netuid
+        ).blocks_since_epoch
+
+        end_ts = self.subtensor.get_timestamp(
+            self.subtensor.block - blocks_since_epoch
+        ).timestamp()
+        since_ts = end_ts - self.scoring_window_seconds
+
         latest_ts = self.score_store.latest_scores_all_timestamp()
+
         age_seconds = now - latest_ts
         if age_seconds > 3600:
             bt.logging.warning(
-                f"Latest synced score is older than 1 hour ({age_seconds:.0f}s). Burning emissions."
+                f"Latest synced score is older than 1 hour ({age_seconds:.0f}s). Switching to burn code."
             )
-            zero_weights = np.zeros(self.metagraph.n, dtype=np.float32)
+            burn_weights = np.zeros(self.metagraph.n, dtype=np.float32)
             if self.metagraph.n > 0:
-                zero_weights[0] = 1.0
-            raw_weights = zero_weights
-            (
-                processed_weight_uids,
-                processed_weights,
-            ) = process_weights_for_netuid(
-                uids=self.metagraph.uids,
-                weights=raw_weights,
-                netuid=self.config.netuid,
-                subtensor=self.subtensor,
-                metagraph=self.metagraph,
-            )
-            (
-                uint_uids,
-                uint_weights,
-            ) = convert_weights_and_uids_for_emit(
-                uids=processed_weight_uids, weights=processed_weights
-            )
-            result, msg = self.subtensor.set_weights(
-                wallet=self.wallet,
-                netuid=self.config.netuid,
-                uids=uint_uids,
-                weights=uint_weights,
-                wait_for_finalization=False,
-                wait_for_inclusion=False,
-                version_key=self.spec_version,
-            )
-            if result is True:
-                bt.logging.info("set_weights on chain successfully (burned)")
-            else:
-                bt.logging.error("set_weights failed (burned)", msg)
-            return
-        games_in_window = self.score_store.games_in_window(since_ts)
-        hotkey_totals = self.score_store.window_scores_by_hotkey(since_ts)
-        window_scores = np.zeros(self.metagraph.n, dtype=np.float32)
-        for uid, hotkey in enumerate(self.metagraph.hotkeys):
-            window_scores[uid] = float(hotkey_totals.get(hotkey, 0.0))
-
-        ranked_uids = [
-            uid
-            for uid in sorted(
-                range(len(window_scores)),
-                key=lambda i: window_scores[i],
-                reverse=True,
-            )
-            if window_scores[uid] > 0
-        ]
-
-        if games_in_window < 300:
-            bt.logging.warning(
-                f"Not enough games in scoring window ({games_in_window} < 300); skipping set_weights."
-            )
+                burn_weights[0] = 1.0
+            self._set_weights(burn_weights)
             return
 
-        if self.subtensor.get_subnet_info(self.config.netuid).blocks_since_epoch < 300:
-            bt.logging.warning(
-                "Not enough blocks in current epoch; skipping set_weights."
-            )
-            return
+        final_weights = np.zeros(self.metagraph.n, dtype=np.float32)
+        for competition in Competition:
+            weights = np.zeros(self.metagraph.n, dtype=np.float32)
+            comp_value = competition.value
 
-        if not ranked_uids:
-            bt.logging.warning(
-                "No positive windowed scores available for weight setting; skipping set_weights."
-            )
-            return
-
-        assigned_scores = np.zeros_like(window_scores)
-        top_count = min(3, len(ranked_uids))
-        top_uids = ranked_uids[:top_count]
-        other_uids = ranked_uids[top_count:]
-
-        if top_count == 1:
-            assigned_scores[top_uids[0]] = 1.0
-            self.scores = assigned_scores
-            # No other players to allocate to.
-            # Proceed with standard normalization below.
-        else:
-            if top_count == 2:
-                top_distribution = [0.7, 0.3]
-                remaining_pool = 0.0
-            else:
-                top_distribution = [0.5, 0.25, 0.125]
-                remaining_pool = 0.125
-
-            for rank, uid in enumerate(top_uids):
-                assigned_scores[uid] = top_distribution[rank]
-
-            if other_uids and remaining_pool > 0:
-                other_totals = np.array(
-                    [window_scores[uid] for uid in other_uids], dtype=np.float32
-                )
-                others_sum = float(other_totals.sum())
-                if others_sum > 0:
-                    shares = remaining_pool * (other_totals / others_sum)
-                else:
-                    shares = np.full_like(
-                        other_totals, remaining_pool / len(other_uids)
-                    )
-                for uid, share in zip(other_uids, shares):
-                    assigned_scores[uid] = float(share)
-
-            total_assigned = float(assigned_scores.sum())
-            if total_assigned <= 0:
+            comp_games = self.score_store.games_in_window(since_ts, end_ts, comp_value)
+            if comp_games < 300:
                 bt.logging.warning(
-                    "Computed distribution has zero total; skipping set_weights."
+                    f"Not enough games for competition {comp_value}; skipping its allocation. ({comp_games} < 300)"
                 )
-                return
+                weights[0] = 1.0
+                final_weights += weights
+                continue
 
-            if total_assigned != 1.0:
-                assigned_scores /= total_assigned
+            comp_scores = self.score_store.window_scores_by_hotkey(since_ts, comp_value)
+            if not comp_scores:
+                bt.logging.warning(
+                    f"No scores for competition {comp_value}; skipping its allocation."
+                )
+                continue
 
-            # Adjust weights by stake rank.
-            stakes = np.array(
-                [self.metagraph.alpha_stake[uid] for uid in range(self.metagraph.n)],
-                dtype=np.float64,
+            top_hotkey, top_score = max(comp_scores.items(), key=lambda item: item[1])
+            if top_score <= 0:
+                bt.logging.warning(
+                    f"Top score for competition {comp_value} is non-positive; skipping."
+                )
+                weights[0] = 1.0
+                final_weights += weights
+                continue
+
+            try:
+                uid = self.metagraph.hotkeys.index(top_hotkey)
+                weights[uid] = 1.0
+                bt.logging.info(
+                    f"Competition {comp_value} winner: {top_hotkey} with score {top_score} assigned weight to uid {uid}."
+                )
+            except ValueError:
+                bt.logging.warning(
+                    f"Top hotkey {top_hotkey} for competition {comp_value} not in metagraph."
+                )
+                continue
+
+            final_weights += weights
+
+        if final_weights.sum() == 0:
+            bt.logging.warning(
+                "No competition winners determined; skipping set_weights."
             )
-            stake_ranks = np.argsort(np.argsort(-stakes)) + 1  # 1-based ranks
-            rank_weight = 1 + 1 / stake_ranks
-            rank_weight = rank_weight / rank_weight.max()
+            return
 
-            adjusted_scores = assigned_scores * rank_weight
-            total_adjusted = float(adjusted_scores.sum())
-            if total_adjusted > 0:
-                adjusted_scores /= total_adjusted
-            else:
-                adjusted_scores = assigned_scores
-
-            self.scores = adjusted_scores
+        # Normalize final weights
+        self.scores = final_weights / sum(final_weights)
 
         bt.logging.info(f"Assigned scores: {self.scores}")
-        # Check if self.scores contains any NaN values and log a warning if it does.
+
         if np.isnan(self.scores).any():
             bt.logging.warning(
-                f"Scores contain NaN values. This may be due to a lack of responses from miners, or a bug in your reward functions."
+                "Scores contain NaN values. This may be due to a lack of responses from miners, or a bug in your reward functions."
             )
 
-        # Calculate the average reward for each uid across non-zero values.
-        # Replace any NaN values with 0.
-        # Compute the norm of the scores
         norm = np.linalg.norm(self.scores, ord=1, axis=0, keepdims=True)
-
-        # Check if the norm is zero or contains NaN values
         if np.any(norm == 0) or np.isnan(norm).any():
-            norm = np.ones_like(norm)  # Avoid division by zero or NaN
+            norm = np.ones_like(norm)
 
-        # Compute raw_weights safely
         raw_weights = self.scores / norm
+        self._set_weights(raw_weights)
 
-        bt.logging.debug("raw_weights", raw_weights)
-        bt.logging.debug("raw_weight_uids", str(self.metagraph.uids.tolist()))
-        # Process the raw weights to final_weights via subtensor limitations.
+    def _set_weights(self, weights: np.ndarray) -> None:
+        weights = np.asarray(weights, dtype=np.float32)
         (
             processed_weight_uids,
             processed_weights,
         ) = process_weights_for_netuid(
             uids=self.metagraph.uids,
-            weights=raw_weights,
+            weights=weights,
             netuid=self.config.netuid,
             subtensor=self.subtensor,
             metagraph=self.metagraph,
         )
-        bt.logging.debug("processed_weights", processed_weights)
-        bt.logging.debug("processed_weight_uids", processed_weight_uids)
-
-        # Convert to uint16 weights and uids.
         (
             uint_uids,
             uint_weights,
         ) = convert_weights_and_uids_for_emit(
             uids=processed_weight_uids, weights=processed_weights
         )
-        bt.logging.debug("uint_weights", uint_weights)
-        bt.logging.debug("uint_uids", uint_uids)
-
-        # Set the weights on chain via our subtensor connection.
         result, msg = self.subtensor.set_weights(
             wallet=self.wallet,
             netuid=self.config.netuid,

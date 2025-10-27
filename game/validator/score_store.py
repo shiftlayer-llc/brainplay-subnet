@@ -10,6 +10,7 @@ from typing import Dict, Iterable, Optional, Sequence
 import aiohttp
 import bittensor as bt
 from game.utils.misc import parse_ts
+from game.utils.game import Competition
 
 
 class ScoreStore:
@@ -53,6 +54,7 @@ class ScoreStore:
             CREATE TABLE IF NOT EXISTS scores (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 room_id TEXT NOT NULL UNIQUE,
+                competition TEXT,
                 rs TEXT NOT NULL,
                 ro TEXT NOT NULL,
                 bs TEXT NOT NULL,
@@ -69,6 +71,10 @@ class ScoreStore:
             );
             """
         )
+        try:
+            cur.execute("ALTER TABLE scores ADD COLUMN competition TEXT")
+        except sqlite3.OperationalError:
+            pass
         cur.close()
         with self._lock:
             cur = self.conn.cursor()
@@ -78,10 +84,15 @@ class ScoreStore:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     hotkey TEXT NOT NULL,
                     uid INTEGER NOT NULL,
+                    competition TEXT NOT NULL,
                     ts INTEGER NOT NULL
                 );
                 """
             )
+            try:
+                cur.execute("ALTER TABLE selection_events ADD COLUMN competition TEXT")
+            except sqlite3.OperationalError:
+                pass
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_selection_events_hotkey ON selection_events(hotkey);"
             )
@@ -94,6 +105,7 @@ class ScoreStore:
                 CREATE TABLE IF NOT EXISTS scores_all (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     room_id TEXT NOT NULL,
+                    competition TEXT,
                     validator TEXT NOT NULL,
                     rs TEXT NOT NULL,
                     ro TEXT NOT NULL,
@@ -115,25 +127,31 @@ class ScoreStore:
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_scores_all_room_validator ON scores_all(room_id, validator);"
             )
             try:
+                cur.execute("ALTER TABLE scores_all ADD COLUMN competition TEXT")
+            except sqlite3.OperationalError:
+                pass
+            try:
                 cur.execute("ALTER TABLE scores_all ADD COLUMN synced_at INTEGER")
             except sqlite3.OperationalError:
                 pass
 
-            # Seed selection events to ensure every hotkey appears at least once.
+            # Seed selection events so every hotkey/competition pair appears at least once.
             now = int(time.time())
+            competitions = [comp.value for comp in Competition]
             for uid, hotkey in enumerate(hotkeys):
-                cur.execute(
-                    "SELECT 1 FROM selection_events WHERE hotkey=? LIMIT 1",
-                    (hotkey,),
-                )
-                if cur.fetchone() is None:
+                for comp in competitions:
                     cur.execute(
-                        """
-                        INSERT INTO selection_events(hotkey, uid, ts)
-                        VALUES(?, ?, ?)
-                        """,
-                        (hotkey, uid, now),
+                        "SELECT 1 FROM selection_events WHERE hotkey=? AND competition=? LIMIT 1",
+                        (hotkey, comp),
                     )
+                    if cur.fetchone() is None:
+                        cur.execute(
+                            """
+                            INSERT INTO selection_events(hotkey, uid, competition, ts)
+                            VALUES(?, ?, ?, ?)
+                            """,
+                            (hotkey, uid, comp, now),
+                        )
 
             cur.close()
 
@@ -141,6 +159,7 @@ class ScoreStore:
         self,
         *,
         room_id: str,
+        competition: str,
         rs: str,
         ro: str,
         bs: str,
@@ -159,12 +178,13 @@ class ScoreStore:
             cur.execute(
                 """
                 INSERT INTO scores(
-                    room_id, rs, ro, bs, bo, winner,
+                    room_id, competition, rs, ro, bs, bo, winner,
                     started_at, ended_at,
                     score_rs, score_ro, score_bs, score_bo,
                     reason, synced_at
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,NULL)
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?, ?, NULL)
                 ON CONFLICT(room_id) DO UPDATE SET
+                    competition=excluded.competition,
                     rs=excluded.rs,
                     ro=excluded.ro,
                     bs=excluded.bs,
@@ -182,6 +202,7 @@ class ScoreStore:
                 """,
                 (
                     room_id,
+                    competition,
                     rs,
                     ro,
                     bs,
@@ -201,6 +222,7 @@ class ScoreStore:
     def pending(self) -> Iterable[Dict[str, object]]:
         columns = [
             "room_id",
+            "competition",
             "rs",
             "ro",
             "bs",
@@ -225,20 +247,37 @@ class ScoreStore:
             cur.close()
         return rows
 
-    def window_scores_by_hotkey(self, since_ts: float) -> Dict[str, float]:
+    def window_scores_by_hotkey(
+        self, since_ts: float, competition: Optional[str] = None
+    ) -> Dict[str, float]:
         totals: Dict[str, float] = defaultdict(float)
         with self._lock:
             cur = self.conn.cursor()
-            cur.execute(
-                """
+            params = [int(since_ts)]
+            query = """
                 SELECT rs, ro, bs, bo,
                        score_rs, score_ro, score_bs, score_bo
                 FROM scores_all
                 WHERE ended_at >= ?
-                """,
-                (int(since_ts),),
-            )
+            """
+            if competition is not None:
+                query += " AND competition = ?"
+                params.append(competition)
+            cur.execute(query, tuple(params))
             rows = cur.fetchall()
+            if not rows:
+                params = [int(since_ts)]
+                query = """
+                    SELECT rs, ro, bs, bo,
+                           score_rs, score_ro, score_bs, score_bo
+                    FROM scores
+                    WHERE ended_at >= ?
+                """
+                if competition is not None:
+                    query += " AND competition = ?"
+                    params.append(competition)
+                cur.execute(query, tuple(params))
+                rows = cur.fetchall()
             for row in rows:
                 rs, ro, bs, bo, score_rs, score_ro, score_bs, score_bo = row
                 if rs:
@@ -252,27 +291,37 @@ class ScoreStore:
             cur.close()
         return dict(totals)
 
-    def increment_selection_count(self, hotkey: str, uid: int) -> None:
+    def increment_selection_count(
+        self, hotkey: str, uid: int, competition: str
+    ) -> None:
         if not hotkey:
             return
         with self._lock:
             cur = self.conn.cursor()
             cur.execute(
                 """
-                INSERT INTO selection_events(hotkey, uid, ts)
-                VALUES(?, ?, ?)
+                INSERT INTO selection_events(hotkey, uid, competition, ts)
+                VALUES(?, ?, ?, ?)
                 """,
-                (hotkey, uid, int(time.time())),
+                (hotkey, uid, competition, int(time.time())),
             )
             cur.close()
 
-    def selection_counts_since(self, since_ts: float) -> Dict[str, int]:
+    def selection_counts_since(
+        self, since_ts: float, competition: Optional[str] = None
+    ) -> Dict[str, int]:
         with self._lock:
             cur = self.conn.cursor()
-            cur.execute(
-                "SELECT hotkey, COUNT(*) FROM selection_events WHERE ts >= ? GROUP BY hotkey",
-                (int(since_ts),),
-            )
+            if competition is None:
+                cur.execute(
+                    "SELECT hotkey, COUNT(*) FROM selection_events WHERE ts >= ? GROUP BY hotkey",
+                    (int(since_ts),),
+                )
+            else:
+                cur.execute(
+                    "SELECT hotkey, COUNT(*) FROM selection_events WHERE ts >= ? AND competition = ? GROUP BY hotkey",
+                    (int(since_ts), competition),
+                )
             rows = cur.fetchall()
             cur.close()
         return {hotkey: int(count) for hotkey, count in rows}
@@ -292,26 +341,37 @@ class ScoreStore:
             cur = self.conn.cursor()
             cur.execute("SELECT MAX(ended_at) FROM scores_all")
             row = cur.fetchone()
+            if not row or row[0] is None:
+                cur.execute("SELECT MAX(ended_at) FROM scores")
+                row = cur.fetchone()
             cur.close()
         if not row or row[0] is None:
             return 0
         return int(row[0])
 
-    def games_in_window(self, since_ts: float) -> int:
+    def games_in_window(
+        self, since_ts: float, end_ts: float, competition: Optional[str] = None
+    ) -> int:
         with self._lock:
             cur = self.conn.cursor()
-            cur.execute(
-                "SELECT COUNT(*) FROM scores_all WHERE ended_at >= ?",
-                (int(since_ts),),
+            params = [int(since_ts), int(end_ts)]
+            query = (
+                "SELECT COUNT(*) FROM scores_all WHERE ended_at >= ? AND ended_at < ?"
             )
+            if competition is not None:
+                query += " AND competition = ?"
+                params.append(competition)
+            cur.execute(query, tuple(params))
             row = cur.fetchone()
             if row and row[0]:
                 count = int(row[0])
             else:
-                cur.execute(
-                    "SELECT COUNT(*) FROM scores WHERE ended_at >= ?",
-                    (int(since_ts),),
-                )
+                params = [int(since_ts)]
+                query = "SELECT COUNT(*) FROM scores WHERE ended_at >= ?"
+                if competition is not None:
+                    query += " AND competition = ?"
+                    params.append(competition)
+                cur.execute(query, tuple(params))
                 (count,) = cur.fetchone()
             cur.close()
         return int(count)
@@ -336,9 +396,6 @@ class ScoreStore:
             return 0
 
         to_sync = list(self.pending())
-        if not to_sync:
-            return 0
-
         synced = 0
         async with aiohttp.ClientSession() as session:
             for row in to_sync:
@@ -364,6 +421,7 @@ class ScoreStore:
                         },
                     },
                     "reason": row["reason"],
+                    "competition": row["competition"],
                 }
                 headers = self.signer() if self.signer else {}
                 try:
@@ -440,23 +498,29 @@ class ScoreStore:
         synced_at = int(time.time())
         for row in rows:
             try:
+                started_at = parse_ts(row.get("started_at")) or parse_ts(
+                    row.get("startedAt")
+                )
+                ended_at = parse_ts(row.get("ended_at")) or parse_ts(row.get("endedAt"))
+                competition = row.get("competition") or ""
                 mapped_rows.append(
                     (
-                        str(row.get("room_id") or ""),
+                        str(row.get("room_id") or row.get("roomId") or ""),
+                        competition,
                         str(row.get("validator") or ""),
                         str(row.get("rs") or ""),
                         str(row.get("ro") or ""),
                         str(row.get("bs") or ""),
                         str(row.get("bo") or ""),
                         row.get("winner"),
-                        parse_ts(row.get("started_at")),
-                        parse_ts(row.get("ended_at")),
-                        float(row.get("score_rs") or 0.0),
-                        float(row.get("score_ro") or 0.0),
-                        float(row.get("score_bs") or 0.0),
-                        float(row.get("score_bo") or 0.0),
+                        int(started_at or 0),
+                        int(ended_at or 0),
+                        float(row.get("score_rs") or row.get("scoreRs") or 0.0),
+                        float(row.get("score_ro") or row.get("scoreRo") or 0.0),
+                        float(row.get("score_bs") or row.get("scoreBs") or 0.0),
+                        float(row.get("score_bo") or row.get("scoreBo") or 0.0),
                         row.get("reason"),
-                        int(synced_at),
+                        int(row.get("synced_at") or row.get("syncedAt") or synced_at),
                     )
                 )
             except Exception as err:  # noqa: BLE001
@@ -470,12 +534,13 @@ class ScoreStore:
             cur.executemany(
                 """
                 INSERT INTO scores_all(
-                    room_id, validator, rs, ro, bs, bo,
+                    room_id, competition, validator, rs, ro, bs, bo,
                     winner, started_at, ended_at,
                     score_rs, score_ro, score_bs, score_bo,
                     reason, synced_at
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(room_id, validator) DO UPDATE SET
+                    competition=excluded.competition,
                     rs=excluded.rs,
                     ro=excluded.ro,
                     bs=excluded.bs,

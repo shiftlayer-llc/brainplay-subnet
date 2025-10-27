@@ -10,6 +10,11 @@ with open("game/utils/wordlist-eng.txt") as f:
 words = random.sample(words, 25)
 
 
+class Competition(Enum):
+    CLUE_COMPETITION = "clue_competition"
+    GUESS_COMPETITION = "guess_competition"
+
+
 class TeamColor(Enum):
     RED = "red"
     BLUE = "blue"
@@ -64,6 +69,7 @@ class TParticipant(BaseModel):
 
 class GameState:
     id: str = None
+    competition: Competition
     cards: list[CardType]
     chatHistory: list[ChatMessage]
     currentTeam: TeamColor
@@ -77,7 +83,8 @@ class GameState:
     gameWinner: TeamColor = None
     participants: list[TParticipant] = []
 
-    def __init__(self, participants):
+    def __init__(self, competition, participants):
+        self.competition = competition
         self.participants = participants
         self.cards = [
             CardType(

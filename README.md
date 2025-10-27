@@ -65,11 +65,20 @@ This reward system not only motivates the miners to perform better but also prov
 git clone https://github.com/shiftlayer-llc/brainplay-subnet.git
 ```
 
-### Adding .env file (For OpenAI API-based miners)
+### Adding .env file
 
 ```bash
 cp .env.example .env
 ```
+
+### Configuring OpenAI Key
+
+Add your OpenAI API key to the `.env` file before running validators or miners:
+
+```env
+OPENAI_KEY=sk-your-key-here
+```
+
 
 ### Setting up a Virtual Environment
 
