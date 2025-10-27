@@ -336,7 +336,7 @@ async def get_llm_response(synapse: GameSynapse) -> GameSynapseOutput:
     output = GameSynapseOutput(
         clue_text=clue, number=number, reasoning=reasoning, guesses=guesses
     )
-    bt.logging.info(f"🚀 successfully get response from llm: {output}")
+    bt.logging.info(f"🚀 llm response: {output}")
 
     return output
 

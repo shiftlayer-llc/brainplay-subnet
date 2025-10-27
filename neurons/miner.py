@@ -236,7 +236,7 @@ class Miner(BaseMinerNeuron):
             guesses=guesses,
             clue_validity=valid,
         )
-        bt.logging.info(f"🚀 successfully get response from llm: {synapse.output}")
+        bt.logging.info(f"🚀 llm response: {synapse.output}")
 
         return synapse
 
