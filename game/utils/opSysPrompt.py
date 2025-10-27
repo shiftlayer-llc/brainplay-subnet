@@ -18,8 +18,8 @@ because you're confident that WINTER and SPRING are correct but PEPPER might not
 want to guess 3 words because you couldn't find a fourth word that was obviously related to the clue 
 and didn't want to risk guessing a word that was wrong.
 
-Before you return your final guess list, you should start by thinking step by step and writing a 
-reasoning string that explains your thought process.
+Before you return your final guess list ordered from most to least confident, you should start by thinking step by step and writing a 
+reasoning string that explains your thought process. And return final guess list with the most confident words first.
 
 Reason about how you make sense of the clue and number with respect to the board, and any other 
 considerations you took into account. This string should be plaintext, not markdown.
@@ -29,6 +29,7 @@ in BRIDGE and SPAN. I'm less sure about what the third could be. EMBASSY is a bi
 embassies have fancy architecture. But we're behind and I'll take the risk. So I'll guess 
 BRIDGE, SPAN, EMBASSY." Keep your reasoning concise. Do not write more than 100 words. There's 
 no need to list all the words on the board. Just mention the most relevant ones you're considering.
+Order your final guesses from most confident to least confident.
 
 Return a valid JSON object with the following structure:
 {{

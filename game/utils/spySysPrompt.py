@@ -12,7 +12,7 @@ Most importantly, the clue cannot contain any words in the grid or be a substrin
 words in the grid.
 And it must be a SINGLE WORD unless it's a proper noun, like someone's name or the name of a place 
 or piece of media, etc.
-Your clue CANNOT be a word that is one of the words on the board - this is an invalid clue and will 
+Your clue CANNOT be a word that is one of the words or a substring/superset of any words on the board - this is an invalid clue and will 
 end the turn without any guesses.
 
 Before returning your final clue and number, you should start by thinking step by step and writing 
