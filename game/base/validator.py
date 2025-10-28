@@ -320,9 +320,7 @@ class BaseValidatorNeuron(BaseNeuron):
             self.config.netuid
         ).blocks_since_epoch
 
-        end_ts = self.subtensor.get_timestamp(
-            self.subtensor.block - blocks_since_epoch
-        ).timestamp()
+        end_ts = self.subtensor.get_timestamp().timestamp() - (blocks_since_epoch * 12)
         since_ts = end_ts - self.scoring_window_seconds
 
         latest_ts = self.score_store.latest_scores_all_timestamp()
