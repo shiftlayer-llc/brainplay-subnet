@@ -9,3 +9,4 @@ bittensor>=9.11.0
 openai
 python-dotenv
 black
+wandb

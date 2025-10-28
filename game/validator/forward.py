@@ -42,9 +42,6 @@ from game.utils.game import (
 )
 from openai import OpenAI
 import os
-from dotenv import load_dotenv
-
-load_dotenv()  # take environment variables from .env.
 
 client = OpenAI(api_key=os.environ.get("OPENAI_KEY"))
 
@@ -313,7 +310,7 @@ async def get_llm_response(synapse: GameSynapse) -> GameSynapseOutput:
     response_str = await get_gpt5_response(
         messages
     )  # , effort = "medium" if synapse.your_role == "spymaster" else "minimal")
-    bt.logging.debug(f"💬 LLM Response: {response_str}")
+    # bt.logging.debug(f"💬 LLM Response: {response_str}")
     response_dict = json.loads(response_str)
     if "clue" in response_dict:
         clue = response_dict["clue"]
@@ -336,8 +333,6 @@ async def get_llm_response(synapse: GameSynapse) -> GameSynapseOutput:
     output = GameSynapseOutput(
         clue_text=clue, number=number, reasoning=reasoning, guesses=guesses
     )
-    bt.logging.info(f"🚀 llm response: {output}")
-
     return output
 
 
@@ -581,7 +576,7 @@ async def forward(self):
 
             bt.logging.info(f"Received clue from miner {to_uid}")
             bt.logging.info(f"Clue: {clue}, Number: {number}")
-            bt.logging.info(f"Reasoning: {reasoning}")
+            # bt.logging.info(f"Reasoning: {reasoning}")
 
             board_words = [
                 card.word for card in game_state.cards if not card.is_revealed
@@ -630,7 +625,7 @@ async def forward(self):
             guesses = response.guesses
             reasoning = response.reasoning
             bt.logging.info(f"Guessed cards: {guesses}")
-            bt.logging.info(f"Reasoning: {reasoning}")
+            # bt.logging.info(f"Reasoning: {reasoning}")
             if guesses is None:
                 bt.logging.info(
                     f"❌ Invalid guesses '{guesses}' provided by miner {to_uid}."

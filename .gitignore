@@ -168,3 +168,5 @@ testing/
 backups
 logs
 app.config.js
+
+wandb/
