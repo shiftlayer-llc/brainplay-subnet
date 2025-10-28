@@ -265,19 +265,6 @@ class ScoreStore:
                 params.append(competition)
             cur.execute(query, tuple(params))
             rows = cur.fetchall()
-            if not rows:
-                params = [int(since_ts)]
-                query = """
-                    SELECT rs, ro, bs, bo,
-                           score_rs, score_ro, score_bs, score_bo
-                    FROM scores
-                    WHERE ended_at >= ?
-                """
-                if competition is not None:
-                    query += " AND competition = ?"
-                    params.append(competition)
-                cur.execute(query, tuple(params))
-                rows = cur.fetchall()
             for row in rows:
                 rs, ro, bs, bo, score_rs, score_ro, score_bs, score_bo = row
                 if rs:
@@ -366,13 +353,7 @@ class ScoreStore:
             if row and row[0]:
                 count = int(row[0])
             else:
-                params = [int(since_ts)]
-                query = "SELECT COUNT(*) FROM scores WHERE ended_at >= ?"
-                if competition is not None:
-                    query += " AND competition = ?"
-                    params.append(competition)
-                cur.execute(query, tuple(params))
-                (count,) = cur.fetchone()
+                count = 0
             cur.close()
         return int(count)
 
