@@ -77,8 +77,8 @@ Add your OpenAI API key to the `.env` file before running validators or miners:
 
 ```env
 OPENAI_KEY=sk-your-key-here
+WANDB_API_KEY=your-wandb-api-key   # required for validators only
 ```
-
 
 ### Setting up a Virtual Environment
 
