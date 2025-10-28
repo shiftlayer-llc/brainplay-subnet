@@ -28,6 +28,7 @@ import argparse
 import threading
 from datetime import datetime, timezone
 import bittensor as bt
+import wandb
 
 from typing import List, Union
 from traceback import print_exception
@@ -45,6 +46,9 @@ from game.validator.scoring_config import (
     parse_interval_to_seconds,
     SCORING_INTERVAL,
 )
+from dotenv import load_dotenv
+
+load_dotenv()  # take environment variables from .env.
 
 
 class BaseValidatorNeuron(BaseNeuron):
@@ -114,6 +118,21 @@ class BaseValidatorNeuron(BaseNeuron):
         ):
             scoring_interval_text = self.config.scoring.interval
         self.scoring_window_seconds = parse_interval_to_seconds(scoring_interval_text)
+
+        # Init wandb
+        if self.config.wandb.off is False:
+            bt.logging.info("Wandb logging is turned on.")
+            bt.logging.info(
+                f"Initializing wandb with project name: {self.config.wandb.project_name}, entity: {self.config.wandb.entity}"
+            )
+            self.wandb_run = wandb.init(
+                project=self.config.wandb.project_name,
+                entity=self.config.wandb.entity,
+                name=f"validator-{self.wallet.hotkey.ss58_address[:6]}",
+            )
+        else:
+            bt.logging.info("Wandb logging is turned off.")
+            self.wandb_run = None
 
         # Init sync with the network. Updates the metagraph.
         self.sync()
@@ -218,6 +237,8 @@ class BaseValidatorNeuron(BaseNeuron):
             except KeyboardInterrupt:
                 self.axon.stop()
                 bt.logging.success("Validator killed by keyboard interrupt.")
+                if self.wandb_run:
+                    self.wandb_run.finish()
                 exit()
 
             # In case of unforeseen errors, the validator will log the error and continue operations.
