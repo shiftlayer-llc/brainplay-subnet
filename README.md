@@ -71,9 +71,9 @@ git clone https://github.com/shiftlayer-llc/brainplay-subnet.git
 cp .env.example .env
 ```
 
-### Configuring OpenAI Key
+### Configuring OpenAI and wandb keys
 
-Add your OpenAI API key to the `.env` file before running validators or miners:
+Add your OpenAI API key (both validator and miner) and wandb key (validator only) to the `.env` file before running validators or miners:
 
 ```env
 OPENAI_KEY=sk-your-key-here
