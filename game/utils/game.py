@@ -1,13 +1,14 @@
 # define card type
+import hashlib
+import random
+import time
 from enum import Enum
 from typing import NamedTuple
-import random
+
 from pydantic import BaseModel
 
 with open("game/utils/wordlist-eng.txt") as f:
     words = f.readlines()
-    # select 25 random words
-words = random.sample(words, 25)
 
 
 class Competition(Enum):
@@ -28,12 +29,6 @@ class CardColor(Enum):
 
 
 class CardType(BaseModel):
-    # def __init__(self, word: str, color: CardColor | None, is_revealed: bool, was_recently_revealed: bool):
-    #     self.word = word
-    #     self.color = color
-    #     self.is_revealed = is_revealed
-    #     self.was_recently_revealed = was_recently_revealed
-
     word: str
     color: str | None
     is_revealed: bool
@@ -83,9 +78,15 @@ class GameState:
     gameWinner: TeamColor = None
     participants: list[TParticipant] = []
 
-    def __init__(self, competition, participants):
+    def __init__(self, competition, participants, seed: str | int | None = None):
         self.competition = competition
         self.participants = participants
+        seed_source = str(time.time_ns())
+        # Seed a dedicated RNG per game so the board stays consistent for the game lifetime.
+        self.seed = hashlib.sha256(seed_source.encode("utf-8")).hexdigest()
+        rng = random.Random(int(self.seed, 16))
+
+        self.words = rng.sample(words, 25)
         self.cards = [
             CardType(
                 word=word.strip(),
@@ -94,15 +95,14 @@ class GameState:
                 was_recently_revealed=False,
             )
             for word, color in zip(
-                words,
+                self.words,
                 [CardColor.RED] * 9
                 + [CardColor.BLUE] * 8
                 + [CardColor.BYSTANDER] * 7
                 + [CardColor.ASSASSIN],
             )
         ]
-        # Shuffle the cards
-        random.shuffle(self.cards)
+        rng.shuffle(self.cards)
         self.chatHistory = []
         self.currentTeam = TeamColor.RED
         self.currentRole = Role.SPYMASTER
