@@ -351,13 +351,21 @@ class BaseValidatorNeuron(BaseNeuron):
                 continue
 
             comp_scores = self.score_store.window_scores_by_hotkey(since_ts, comp_value)
+            comp_scores_by_uid = {
+                self.metagraph.hotkeys.index(hotkey): score
+                for hotkey, score in comp_scores.items()
+                if hotkey in self.metagraph.hotkeys
+            }
+            bt.logging.info(
+                f"Competition {comp_value} scores: \n {json.dumps(comp_scores_by_uid, indent=2)}"
+            )
             if not comp_scores:
                 bt.logging.warning(
                     f"No scores for competition {comp_value}; skipping its allocation."
                 )
                 continue
 
-            top_hotkey, top_score = max(comp_scores.items(), key=lambda item: item[1])
+            top_score = max(comp_scores.values())
             if top_score <= 0:
                 bt.logging.warning(
                     f"Top score for competition {comp_value} is non-positive; skipping."
@@ -366,17 +374,29 @@ class BaseValidatorNeuron(BaseNeuron):
                 final_weights += weights
                 continue
 
-            try:
-                uid = self.metagraph.hotkeys.index(top_hotkey)
-                weights[uid] = 1.0
-                bt.logging.info(
-                    f"Competition {comp_value} winner: {top_hotkey} with score {top_score} assigned weight to uid {uid}."
-                )
-            except ValueError:
+            top_hotkeys = [
+                hotkey for hotkey, score in comp_scores.items() if score == top_score
+            ]
+            winner_uids = []
+            for hotkey in top_hotkeys:
+                try:
+                    winner_uids.append(self.metagraph.hotkeys.index(hotkey))
+                except ValueError:
+                    bt.logging.warning(
+                        f"Top hotkey {hotkey} for competition {comp_value} not in metagraph."
+                    )
+            if not winner_uids:
                 bt.logging.warning(
-                    f"Top hotkey {top_hotkey} for competition {comp_value} not in metagraph."
+                    f"No top hotkeys for competition {comp_value} present in metagraph; skipping."
                 )
                 continue
+
+            weight_per_winner = 1.0 / len(winner_uids)
+            for uid in winner_uids:
+                weights[uid] = weight_per_winner
+            bt.logging.info(
+                f"Competition {comp_value} winners: {top_hotkeys} with score {top_score} assigned weight {weight_per_winner} to uids {winner_uids}."
+            )
 
             final_weights += weights
 
