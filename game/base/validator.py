@@ -389,13 +389,23 @@ class BaseValidatorNeuron(BaseNeuron):
                 bt.logging.warning(
                     f"No top hotkeys for competition {comp_value} present in metagraph; skipping."
                 )
+                weights[0] = 1.0
+                final_weights += weights
                 continue
 
-            weight_per_winner = 1.0 / len(winner_uids)
-            for uid in winner_uids:
-                weights[uid] = weight_per_winner
+            if len(winner_uids) > 1:
+                bt.logging.info(
+                    f"Competition {comp_value} has multiple winners: {winner_uids} with score {top_score}; skipping"
+                )
+                weights[0] = 1.0
+                final_weights += weights
+                continue
+
+            winner_uid = winner_uids[0]
+            weights[winner_uid] = 1.0
+
             bt.logging.info(
-                f"Competition {comp_value} winners: {top_hotkeys} with score {top_score} assigned weight {weight_per_winner} to uids {winner_uids}."
+                f"Competition {comp_value} winner: Miner {winner_uid} with score {top_score}"
             )
 
             final_weights += weights
