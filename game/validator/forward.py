@@ -256,8 +256,6 @@ async def remove_room(self, roomId):
 
 async def get_llm_response(synapse: GameSynapse) -> GameSynapseOutput:
 
-    bt.logging.info("💌 Received GameSynapse request")
-
     async def get_gpt5_response(messages, effort="minimal"):
         try:
             result = client.responses.create(
@@ -429,8 +427,17 @@ async def forward(self):
     while game_state.gameWinner is None:
         bt.logging.info("=" * 50)
         bt.logging.info(f"Game step {game_step + 1}")
-        bt.logging.info(f"Current Team: {game_state.currentTeam}")
-        bt.logging.info(f"Current Role: {game_state.currentRole}")
+
+        is_miner_turn = (
+            game_state.competition == Competition.CLUE_COMPETITION
+            and your_role == Role.SPYMASTER
+            or game_state.competition == Competition.GUESS_COMPETITION
+            and your_role == Role.OPERATIVE
+        )
+
+        bt.logging.info(
+            f"Current Role: {game_state.currentTeam.value} {game_state.currentRole.value} ({'Miner' if is_miner_turn else 'Validator'})"
+        )
 
         # 1. Prepare the query
         if game_state.currentRole == Role.SPYMASTER:
@@ -487,16 +494,12 @@ async def forward(self):
         started_at = time.time()
         # 2.1 Query the participant
         response = None
-        is_miner_turn = (
-            game_state.competition == Competition.CLUE_COMPETITION
-            and your_role == Role.SPYMASTER
-            or game_state.competition == Competition.GUESS_COMPETITION
-            and your_role == Role.OPERATIVE
-        )
 
         if is_miner_turn:
             axon = self.metagraph.axons[to_uid]
-            bt.logging.info(f"⏬ Sending game query to miner {to_uid}, {axon}")
+            bt.logging.info(
+                f"⏬ Sending game query to miner {to_uid}, ({axon.ip}:{axon.port}, {axon.hotkey})"
+            )
             for i in range(3):
                 sent_at = time.time()
                 response = await self.dendrite(
@@ -508,8 +511,11 @@ async def forward(self):
                 if response or (time.time() - sent_at) > 3:
                     break
                 bt.logging.warning(f"⏳ No response from miner {to_uid} ({i+1}/3)")
+            bt.logging.info(
+                f"⏫ Response from miner {to_uid} took {time.time() - started_at:.2f}s"
+            )
         else:
-            bt.logging.info(f"⏬ Sending game query to LLM for role {your_role}")
+            bt.logging.info(f"⏬ Sending game query to LLM for {your_role}")
             response = await get_llm_response(synapse)
             if response is None:
                 bt.logging.error("Failed to get response from LLM, exiting.")
@@ -517,9 +523,6 @@ async def forward(self):
                 return
 
         # 2.2 Check response
-        bt.logging.info(
-            f"⏫ Response from miner {to_uid} took {time.time() - started_at:.2f}s"
-        )
         if response is None:
             no_response_counts[to_uid] += 1
             bt.logging.warning(
@@ -585,7 +588,7 @@ async def forward(self):
                         reasoning={"effort": "medium"},
                     )
                     result_json = json.loads(result.output_text)
-                    bt.logging.info(f"Rule System Response: {result_json}")
+                    bt.logging.info(f"Clue check: {result_json}")
                     if result_json.get("valid") is False:
                         return False, result_json.get("reasoning", "Invalid clue")
                 except Exception as e:  # noqa: BLE001
@@ -594,7 +597,6 @@ async def forward(self):
                 bt.logging.info(f"✅ Clue '{clue}' with number {number} is valid")
                 return True, "Clue is valid"
 
-            bt.logging.info(f"Received clue from miner {to_uid}")
             bt.logging.info(f"Clue: {clue}, Number: {number}")
             # bt.logging.info(f"Reasoning: {reasoning}")
 
