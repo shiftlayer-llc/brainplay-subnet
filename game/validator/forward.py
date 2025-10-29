@@ -430,10 +430,12 @@ async def forward(self):
 
         is_miner_turn = (
             game_state.competition == Competition.CLUE_COMPETITION
-            and your_role == Role.SPYMASTER
+            and game_state.currentRole == Role.SPYMASTER
             or game_state.competition == Competition.GUESS_COMPETITION
-            and your_role == Role.OPERATIVE
+            and game_state.currentRole == Role.OPERATIVE
         )
+
+        should_skip_turn = False
 
         bt.logging.info(
             f"Current Role: {game_state.currentTeam.value} {game_state.currentRole.value} ({'Miner' if is_miner_turn else 'Validator'})"
@@ -524,6 +526,7 @@ async def forward(self):
 
         # 2.2 Check response
         if response is None:
+            should_skip_turn = True
             no_response_counts[to_uid] += 1
             bt.logging.warning(
                 f"No response from miner {to_uid} ({no_response_counts[to_uid]}/2)"
@@ -615,6 +618,7 @@ async def forward(self):
             )
 
             if not is_valid_clue:
+                should_skip_turn = True
                 bt.logging.info(
                     f"❌ Invalid clue '{clue}' provided by miner {to_uid} for board words {board_words}. Reason: {reason}"
                 )
@@ -786,7 +790,7 @@ async def forward(self):
         game_state.previousTeam = game_state.currentTeam
 
         if game_state.currentRole == Role.SPYMASTER:
-            if not is_valid_clue or response is None:
+            if should_skip_turn:
                 if game_state.currentTeam == TeamColor.RED:
                     game_state.currentTeam = TeamColor.BLUE
                 else:
