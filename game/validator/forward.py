@@ -692,6 +692,12 @@ async def forward(self):
             # Update the game state
             choose_assasin = False
 
+            if len(guesses) > your_number + 1:
+                bt.logging.info(
+                    f"⚠️ Too many guesses '{guesses}' provided by miner {to_uid} (allowed: {your_number + 1})."
+                )
+                guesses = guesses[: your_number + 1]
+                bt.logging.info(f"Truncated guesses to: {guesses}")
             game_state.currentGuesses = guesses
             game_state.chatHistory.append(
                 ChatMessage(
