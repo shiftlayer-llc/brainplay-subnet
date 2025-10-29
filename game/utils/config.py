@@ -91,7 +91,7 @@ def add_args(cls, parser):
         "--neuron.epoch_length",
         type=int,
         help="The default epoch length (how often we set weights, measured in 12 second blocks).",
-        default=100,
+        default=120,
     )
 
     parser.add_argument(
@@ -194,7 +194,7 @@ def add_validator_args(cls, parser):
         "--clear_db",
         action="store_true",
         help="Remove the validator score database before startup.",
-        default=True,
+        default=False,
     )
 
     parser.add_argument(
