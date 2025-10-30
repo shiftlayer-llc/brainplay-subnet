@@ -369,7 +369,7 @@ async def forward(self):
     bs_hotkey = self.metagraph.axons[bs_uid].hotkey
     bo_hotkey = self.metagraph.axons[bo_uid].hotkey
 
-    no_response_counts = {
+    invalid_respond_counts = {
         miner_uids[0]: 0,
         miner_uids[1]: 0,
     }
@@ -527,11 +527,11 @@ async def forward(self):
         # 2.2 Check response
         if response is None:
             should_skip_turn = True
-            no_response_counts[to_uid] += 1
+            invalid_respond_counts[to_uid] += 1
             bt.logging.warning(
-                f"No response from miner {to_uid} ({no_response_counts[to_uid]}/2)"
+                f"No response from miner {to_uid} ({invalid_respond_counts[to_uid]}/2)"
             )
-            if no_response_counts[to_uid] < 2:
+            if invalid_respond_counts[to_uid] < 2:
                 # Switch turn to the other team
                 game_state.chatHistory.append(
                     ChatMessage(
@@ -555,7 +555,7 @@ async def forward(self):
                 game_state.chatHistory.append(
                     ChatMessage(
                         sender=your_role,
-                        message=f"❌ No response received! Game over.",
+                        message=f"💀 No response received! Game over.",
                         team=game_state.currentTeam,
                         reasoning="No response received.",
                     )
@@ -619,21 +619,45 @@ async def forward(self):
 
             if not is_valid_clue:
                 should_skip_turn = True
-                bt.logging.info(
-                    f"❌ Invalid clue '{clue}' provided by miner {to_uid} for board words {board_words}. Reason: {reason}"
-                )
-                bt.logging.info(f"Penalizing team {game_state.currentTeam}.")
-                game_state.chatHistory.append(
-                    ChatMessage(
-                        sender=Role.SPYMASTER,
-                        message=f"Gave invalid clue '{clue}' with number {number}. Reason: {reason}",
-                        team=game_state.currentTeam,
-                        clueText="null" if clue is None else clue,
-                        number=-1 if number is None else number,
-                        reasoning=reasoning,
+                invalid_respond_counts[to_uid] += 1
+                if invalid_respond_counts[to_uid] < 2:
+                    bt.logging.info(
+                        f"❌ Invalid clue '{clue}' provided by miner {to_uid} for board words {board_words}. Reason: {reason}"
                     )
-                )
-                response.clue_text = None
+                    bt.logging.info(f"Skipping turn to the other team.")
+                    game_state.chatHistory.append(
+                        ChatMessage(
+                            sender=Role.SPYMASTER,
+                            message=f"Gave invalid clue '{clue}' with number {number}. Reason: {reason} Skipping turn.",
+                            team=game_state.currentTeam,
+                            clueText="null" if clue is None else clue,
+                            number=-1 if number is None else number,
+                            reasoning=reasoning,
+                        )
+                    )
+                else:
+                    game_state.gameWinner = (
+                        TeamColor.RED
+                        if game_state.currentTeam == TeamColor.BLUE
+                        else TeamColor.BLUE
+                    )
+                    resetAnimations(self, game_state.cards)
+                    end_reason = "no_response"
+                    bt.logging.info(
+                        f"💀 Invalid clue provided! Game over. Winner: {game_state.gameWinner}"
+                    )
+                    game_state.chatHistory.append(
+                        ChatMessage(
+                            sender=your_role,
+                            message=f"💀 Invalid clue provided! ({reason}) Game over.",
+                            team=game_state.currentTeam,
+                            reasoning="Invalid clue provided.",
+                        )
+                    )
+                    # End the game and remove from gameboard after 10 seconds
+                    await update_room(self, game_state, roomId)
+                    break
+
             else:
                 game_state.chatHistory.append(
                     ChatMessage(
@@ -653,9 +677,9 @@ async def forward(self):
             bt.logging.info(f"Guessed cards: {guesses}")
             # bt.logging.info(f"Reasoning: {reasoning}")
             if guesses is None:
-                no_response_counts[to_uid] += 1
+                invalid_respond_counts[to_uid] += 1
                 bt.logging.info(f"⚠️ No guesses '{guesses}' provided by miner {to_uid}.")
-                if no_response_counts[to_uid] < 2:
+                if invalid_respond_counts[to_uid] < 2:
                     # Switch turn to the other team
                     game_state.chatHistory.append(
                         ChatMessage(
