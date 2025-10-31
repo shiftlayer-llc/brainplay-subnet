@@ -125,10 +125,13 @@ async def create_room(self, game_state: GameState):
                     return None
                 else:
                     response_text = await response.text()
-                    bt.logging.info(f"Room created successfully")
-                    bt.logging.debug(f"Room creation response: {response_text}")
                     try:
-                        return json.loads(response_text)["data"]["id"]
+                        room_id = json.loads(response_text)["data"]["id"]
+                        bt.logging.info(
+                            f"Room created successfully. Room ID: {room_id}"
+                        )
+                        bt.logging.debug(f"Room creation response: {response_text}")
+                        return room_id
                     except (json.JSONDecodeError, KeyError) as e:
                         bt.logging.error(f"Failed to parse room creation response: {e}")
                         return None
@@ -348,7 +351,7 @@ async def forward(self):
         self.step % 2
     ]
 
-    miner_uids, hotkeys_to_increase = await get_random_uids(
+    miner_uids, observer_hotkeys = await get_random_uids(
         self, competition=competition, k=2
     )
     # Exception handling when number of miners less than 2
@@ -400,7 +403,21 @@ async def forward(self):
                 role=Role.OPERATIVE,
             )
         )
-
+    for hotkey in observer_hotkeys:
+        uid = self.metagraph.hotkeys.index(hotkey)
+        participants.append(
+            TParticipant(
+                name=("Miner " + str(uid)),
+                hotkey=hotkey,
+                team=TeamColor.OBSERVER,
+                role=Role.OBSERVER,
+            )
+        )
+    observer_uids = [
+        self.metagraph.hotkeys.index(hotkey) for hotkey in observer_hotkeys
+    ]
+    if observer_uids:
+        bt.logging.info(f"\033[33mObservers: {observer_uids}\033[0m")
     # * Initialize game
     game_step = 0
     started_at = time.time()
@@ -850,20 +867,6 @@ async def forward(self):
     winner_value = (
         game_state.gameWinner.value if game_state.gameWinner is not None else None
     )
-
-    if winner_value:
-        # Increase selection count after the game
-        for hotkey in hotkeys_to_increase:
-            try:
-                uid = self.metagraph.hotkeys.index(hotkey)
-                self.score_store.increment_selection_count(
-                    hotkey, uid, competition.value
-                )
-                bt.logging.info(f"Incremented selection count for {uid}")
-            except Exception as err:  # noqa: BLE001
-                bt.logging.error(
-                    f"Failed to increment selection count for {hotkey}: {err}"
-                )
 
     # Adjust the scores based on responses from miners.
     rewards = get_rewards(

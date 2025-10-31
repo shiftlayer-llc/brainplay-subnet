@@ -51,7 +51,7 @@ async def get_random_uids(
 
     random.shuffle(available_pool)
     selected: List[int] = []
-    hotkeys_to_increase: List[str] = []
+    observer_hotkeys: List[str] = []
 
     while len(selected) < k and available_pool:
         available_selection_counts = [
@@ -79,7 +79,7 @@ async def get_random_uids(
             except ValueError:
                 pass
 
-            hotkeys_to_increase.append(hotkey)
+            observer_hotkeys.append(hotkey)
 
             if uid not in successful_set:
                 continue
@@ -90,6 +90,7 @@ async def get_random_uids(
                 continue
 
             selected.append(uid)
+            observer_hotkeys.pop()
 
             if len(selected) >= k:
                 break
@@ -103,4 +104,4 @@ async def get_random_uids(
             f"Selected miners: {selected}, selected counts: {[selection_counts.get(self.metagraph.hotkeys[uid], 0) for uid in selected]}"
         )
 
-    return selected, hotkeys_to_increase
+    return selected, observer_hotkeys

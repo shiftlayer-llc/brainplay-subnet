@@ -19,6 +19,7 @@ class Competition(Enum):
 class TeamColor(Enum):
     RED = "red"
     BLUE = "blue"
+    OBSERVER = "neutral"
 
 
 class CardColor(Enum):
@@ -38,6 +39,7 @@ class CardType(BaseModel):
 class Role(Enum):
     SPYMASTER = "spymaster"
     OPERATIVE = "operative"
+    OBSERVER = "observer"
 
 
 class ChatMessage(NamedTuple):

@@ -80,24 +80,28 @@ class ScoreStore:
             cur = self.conn.cursor()
             cur.execute(
                 """
-                CREATE TABLE IF NOT EXISTS selection_events (
+                CREATE TABLE IF NOT EXISTS miner_records (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    hotkey TEXT NOT NULL,
-                    uid INTEGER NOT NULL,
+                    validator TEXT NOT NULL,
                     competition TEXT NOT NULL,
-                    ts INTEGER NOT NULL
+                    hotkey TEXT NOT NULL,
+                    room_id TEXT NOT NULL,
+                    ts INTEGER NOT NULL,
+                    synced_at INTEGER NOT NULL
                 );
                 """
             )
-            try:
-                cur.execute("ALTER TABLE selection_events ADD COLUMN competition TEXT")
-            except sqlite3.OperationalError:
-                pass
             cur.execute(
-                "CREATE INDEX IF NOT EXISTS idx_selection_events_hotkey ON selection_events(hotkey);"
+                "CREATE INDEX IF NOT EXISTS idx_miner_records_validator ON miner_records(validator);"
             )
             cur.execute(
-                "CREATE INDEX IF NOT EXISTS idx_selection_events_ts ON selection_events(ts);"
+                "CREATE INDEX IF NOT EXISTS idx_miner_records_competition ON miner_records(competition);"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_miner_records_hotkey ON miner_records(hotkey);"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_miner_records_ts ON miner_records(ts);"
             )
 
             cur.execute(
@@ -105,7 +109,7 @@ class ScoreStore:
                 CREATE TABLE IF NOT EXISTS scores_all (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     room_id TEXT NOT NULL,
-                    competition TEXT,
+                    competition TEXT NOT NULL,
                     validator TEXT NOT NULL,
                     rs TEXT NOT NULL,
                     ro TEXT NOT NULL,
@@ -124,16 +128,8 @@ class ScoreStore:
                 """
             )
             cur.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_scores_all_room_validator ON scores_all(room_id, validator);"
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_scores_all_room_validator ON scores_all(competition, validator);"
             )
-            try:
-                cur.execute("ALTER TABLE scores_all ADD COLUMN competition TEXT")
-            except sqlite3.OperationalError:
-                pass
-            try:
-                cur.execute("ALTER TABLE scores_all ADD COLUMN synced_at INTEGER")
-            except sqlite3.OperationalError:
-                pass
 
             # Seed selection events so every hotkey/competition pair appears at least once.
             now = int(time.time())
@@ -141,13 +137,13 @@ class ScoreStore:
             for uid, hotkey in enumerate(hotkeys):
                 for comp in competitions:
                     cur.execute(
-                        "SELECT 1 FROM selection_events WHERE hotkey=? AND competition=? LIMIT 1",
+                        "SELECT 1 FROM miner_records WHERE hotkey=? AND competition=? LIMIT 1",
                         (hotkey, comp),
                     )
                     if cur.fetchone() is None:
                         cur.execute(
                             """
-                            INSERT INTO selection_events(hotkey, uid, competition, ts)
+                            INSERT INTO miner_records(hotkey, uid, competition, ts)
                             VALUES(?, ?, ?, ?)
                             """,
                             (hotkey, uid, comp, now),
@@ -278,22 +274,6 @@ class ScoreStore:
             cur.close()
         return dict(totals)
 
-    def increment_selection_count(
-        self, hotkey: str, uid: int, competition: str
-    ) -> None:
-        if not hotkey:
-            return
-        with self._lock:
-            cur = self.conn.cursor()
-            cur.execute(
-                """
-                INSERT INTO selection_events(hotkey, uid, competition, ts)
-                VALUES(?, ?, ?, ?)
-                """,
-                (hotkey, uid, competition, int(time.time())),
-            )
-            cur.close()
-
     def selection_counts_since(
         self, since_ts: float, competition: Optional[str] = None
     ) -> Dict[str, int]:
@@ -301,12 +281,12 @@ class ScoreStore:
             cur = self.conn.cursor()
             if competition is None:
                 cur.execute(
-                    "SELECT hotkey, COUNT(*) FROM selection_events WHERE ts >= ? GROUP BY hotkey",
+                    "SELECT hotkey, COUNT(*) FROM miner_records WHERE ts >= ? GROUP BY hotkey",
                     (int(since_ts),),
                 )
             else:
                 cur.execute(
-                    "SELECT hotkey, COUNT(*) FROM selection_events WHERE ts >= ? AND competition = ? GROUP BY hotkey",
+                    "SELECT hotkey, COUNT(*) FROM miner_records WHERE ts >= ? AND competition = ? GROUP BY hotkey",
                     (int(since_ts), competition),
                 )
             rows = cur.fetchall()
@@ -476,6 +456,7 @@ class ScoreStore:
 
     def _upsert_scores_all(self, rows: Sequence[dict]) -> None:
         mapped_rows = []
+        miner_records = []
         synced_at = int(time.time())
         for row in rows:
             try:
@@ -484,6 +465,10 @@ class ScoreStore:
                 )
                 ended_at = parse_ts(row.get("ended_at")) or parse_ts(row.get("endedAt"))
                 competition = row.get("competition") or ""
+                score_rs = float(row.get("score_rs") or row.get("scoreRs") or 0.0)
+                score_ro = float(row.get("score_ro") or row.get("scoreRo") or 0.0)
+                score_bs = float(row.get("score_bs") or row.get("scoreBs") or 0.0)
+                score_bo = float(row.get("score_bo") or row.get("scoreBo") or 0.0)
                 mapped_rows.append(
                     (
                         str(row.get("room_id") or row.get("roomId") or ""),
@@ -496,14 +481,35 @@ class ScoreStore:
                         row.get("winner"),
                         int(started_at or 0),
                         int(ended_at or 0),
-                        float(row.get("score_rs") or row.get("scoreRs") or 0.0),
-                        float(row.get("score_ro") or row.get("scoreRo") or 0.0),
-                        float(row.get("score_bs") or row.get("scoreBs") or 0.0),
-                        float(row.get("score_bo") or row.get("scoreBo") or 0.0),
+                        score_rs,
+                        score_ro,
+                        score_bs,
+                        score_bo,
                         row.get("reason"),
-                        int(row.get("synced_at") or row.get("syncedAt") or synced_at),
+                        int(time.time()),
                     )
                 )
+                participants = row.get("participants") or []
+                scores = [score_rs, score_ro, score_bs, score_bo] + [
+                    0.0 for _ in range(len(participants) - 4)
+                ]
+                validator = row.get("validator") or ""
+                for idx, participant in enumerate(participants):
+                    if participant == validator:
+                        continue
+                    miner_records.append(
+                        (
+                            validator,
+                            competition,
+                            str(participant),  # hotkey
+                            str(row.get("room_id") or row.get("roomId") or ""),
+                            scores[idx],
+                            int(ended_at or 0),
+                            int(
+                                row.get("synced_at") or row.get("syncedAt") or synced_at
+                            ),
+                        )
+                    )
             except Exception as err:  # noqa: BLE001
                 bt.logging.error(f"Skipping malformed scores_all row {row}: {err}")
 
@@ -538,6 +544,13 @@ class ScoreStore:
                 ;
                 """,
                 mapped_rows,
+            )
+            cur.executemany(
+                """
+                INSERT INTO miner_records(validator, competition, hotkey, room_id, ts, synced_at)
+                VALUES(?, ?, ?, ?, ?, ?)
+                """,
+                miner_records,
             )
             cur.close()
 
