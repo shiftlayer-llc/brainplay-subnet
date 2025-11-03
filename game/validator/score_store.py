@@ -102,7 +102,10 @@ class ScoreStore:
                 "CREATE INDEX IF NOT EXISTS idx_miner_records_hotkey ON miner_records(hotkey);"
             )
             cur.execute(
-                "CREATE INDEX IF NOT EXISTS idx_miner_records_ts ON miner_records(ts);"
+                "CREATE INDEX IF NOT EXISTS idx_miner_records_room_id ON miner_records(room_id);"
+            )
+            cur.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_miner_records_room_id_hotkey ON miner_records(room_id, hotkey);"
             )
 
             cur.execute(
@@ -129,27 +132,8 @@ class ScoreStore:
                 """
             )
             cur.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_scores_all_room_validator ON scores_all(competition, validator);"
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_scores_all_room_id ON scores_all(room_id);"
             )
-
-            # Seed selection events so every hotkey/competition pair appears at least once.
-            now = int(time.time())
-            competitions = [comp.value for comp in Competition]
-            for uid, hotkey in enumerate(hotkeys):
-                for comp in competitions:
-                    cur.execute(
-                        "SELECT 1 FROM miner_records WHERE hotkey=? AND competition=? LIMIT 1",
-                        (hotkey, comp),
-                    )
-                    if cur.fetchone() is None:
-                        cur.execute(
-                            """
-                            INSERT INTO miner_records(hotkey, uid, competition, ts)
-                            VALUES(?, ?, ?, ?)
-                            """,
-                            (hotkey, uid, comp, now),
-                        )
-
             cur.close()
 
     def record_game(
@@ -426,6 +410,8 @@ class ScoreStore:
             headers = self.signer() if self.signer else {}
             params = {}
             since_id = self.max_scores_all_id()
+            if since_id > 0:
+                since_id += 1
             params["since_id"] = since_id
             params["limit"] = 100
             while True:
@@ -475,6 +461,7 @@ class ScoreStore:
                 score_bo = float(row.get("score_bo") or row.get("scoreBo") or 0.0)
                 mapped_rows.append(
                     (
+                        int(row.get("id") or 0),
                         str(row.get("room_id") or row.get("roomId") or ""),
                         competition,
                         str(row.get("validator") or ""),
@@ -525,12 +512,12 @@ class ScoreStore:
             cur.executemany(
                 """
                 INSERT INTO scores_all(
-                    room_id, competition, validator, rs, ro, bs, bo,
+                    id, room_id, competition, validator, rs, ro, bs, bo,
                     winner, started_at, ended_at,
                     score_rs, score_ro, score_bs, score_bo,
                     reason, synced_at
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(room_id, validator) DO UPDATE SET
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(room_id) DO UPDATE SET
                     competition=excluded.competition,
                     rs=excluded.rs,
                     ro=excluded.ro,
@@ -552,7 +539,11 @@ class ScoreStore:
             cur.executemany(
                 """
                 INSERT INTO miner_records(validator, competition, hotkey, room_id, score, ts, synced_at)
-                VALUES(?, ?, ?, ?, ?, ?)
+                VALUES(?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(room_id, hotkey) DO UPDATE SET
+                    score=excluded.score,
+                    ts=excluded.ts,
+                    synced_at=excluded.synced_at
                 """,
                 miner_records,
             )
