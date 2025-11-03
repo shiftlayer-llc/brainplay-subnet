@@ -8,11 +8,9 @@ from typing import List, Tuple
 from game.utils.game import Competition
 
 
-async def make_available_pool(
-    self, include: List[int], exclude: List[int] = None
-) -> List[int]:
+def make_available_pool(self, exclude: List[int] = None) -> List[int]:
     """Build the candidate uid pool, removing excluded miners"""
-    available_pool = include.copy()
+    available_pool = [int(uid) for uid in self.metagraph.uids]
     # Step 1: Exclude uids in the exclude list
     available_pool = [uid for uid in available_pool if uid not in (exclude or [])]
     # Step 2: Exclude uids game count in current epoch is non-zero
@@ -21,6 +19,11 @@ async def make_available_pool(
         for uid in available_pool
         if self._global_counts_in_epoch.get(self.metagraph.hotkeys[uid], 0) == 0
     ]
+    bt.logging.debug(
+        f"Available pool after exclusions: {available_pool}, counts: {[self._global_counts_in_epoch.get(self.metagraph.hotkeys[uid], 0) for uid in available_pool]}"
+    )
+    if not available_pool:
+        return []
     # Step 3: Choose uids which have minimum local game count in current window
     minimum_local_count = min(
         [
@@ -34,20 +37,29 @@ async def make_available_pool(
         if self._local_counts_in_window.get(self.metagraph.hotkeys[uid], 0)
         == minimum_local_count
     ]
-    # Step 4: Choose uids which have minimum global game count in current epoch
+    bt.logging.debug(
+        f"Available pool after local count filter: {available_pool}, counts: {[self._local_counts_in_window.get(self.metagraph.hotkeys[uid], 0) for uid in available_pool]}"
+    )
+    # Step 4: Choose uids which have minimum global game count in current window
     minimum_global_count = min(
         [
-            self._global_counts_in_epoch.get(self.metagraph.hotkeys[uid], 0)
+            self._global_counts_in_window.get(self.metagraph.hotkeys[uid], 0)
             for uid in available_pool
         ]
     )
     available_pool = [
         uid
         for uid in available_pool
-        if self._global_counts_in_epoch.get(self.metagraph.hotkeys[uid], 0)
+        if self._global_counts_in_window.get(self.metagraph.hotkeys[uid], 0)
         == minimum_global_count
     ]
-    return random.shuffle(available_pool)
+    bt.logging.debug(
+        f"Available pool after global count filter: {available_pool}, counts: {[self._global_counts_in_window.get(self.metagraph.hotkeys[uid], 0) for uid in available_pool]}"
+    )
+    # Step 5: Shuffle the available pool
+    random.shuffle(available_pool)
+
+    return available_pool
 
 
 async def choose_players(
@@ -89,7 +101,7 @@ async def choose_players(
         )
         since_ts = end_ts - int(window_seconds)
         window_scores = self.score_store.window_average_scores_by_hotkey(
-            since_ts, competition.value
+            competition.value, since_ts, end_ts
         )
         self._local_counts_in_window, self._global_counts_in_window = (
             self.score_store.records_in_window(
@@ -108,9 +120,7 @@ async def choose_players(
         bt.logging.error(f"Failed to fetch window scores: {err}")
         return [], []
 
-    available_pool = make_available_pool(
-        self, ping_successful_uids, exclude=list(exclude_set)
-    )
+    available_pool = make_available_pool(self, list(exclude_set))
     selected: List[int] = []
     observer_hotkeys: List[str] = []
 
@@ -118,8 +128,7 @@ async def choose_players(
     while len(selected) < 1 and available_pool:
 
         for uid in list(available_pool):
-            if len(selected) >= k:
-                break
+
             if uid in selected:
                 continue
 
@@ -134,17 +143,19 @@ async def choose_players(
                 continue
 
             score = float(window_scores.get(hotkey, 0.0))
-            if score < -2.0:
+            if score < -1.0:
                 bt.logging.warning(f"UID {uid} has low score: {score}")
                 continue
 
             selected.append(uid)
             observer_hotkeys.pop()
+
+            bt.logging.info(f"Selected first player: {uid}")
             break
 
-        available_pool = make_available_pool(
-            self, ping_successful_uids, exclude=list(exclude_set)
-        )
+        available_pool = make_available_pool(self, list(exclude_set))
+
+    bt.logging.debug(f"Excluded uids after first selection: {exclude_set}")
 
     if len(selected) == 0:
         bt.logging.error("No available miners could be selected.")
@@ -179,9 +190,7 @@ async def choose_players(
             observer_hotkeys.pop()
             break
 
-        available_pool = make_available_pool(
-            self, ping_successful_uids, exclude=list(exclude_set)
-        )
+        available_pool = make_available_pool(self, list(exclude_set))
 
     if len(selected) < k:
         bt.logging.warning(
