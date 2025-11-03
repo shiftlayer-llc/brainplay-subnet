@@ -52,14 +52,18 @@ async def ping_uids(dendrite: bt.dendrite, metagraph, uids, timeout=30):
             for uid, response in zip(uids, responses)
             if response.is_available and response.version == game.__version__
         ]
+        failed_uids = [
+            uid for uid, response in zip(uids, responses) if not response.is_available
+        ]
     except Exception as e:
         bt.logging.error(f"Dendrite ping failed: {e}")
         traceback.print_exc()
         successful_uids = []
 
     bt.logging.info(f"ping() successful uids: {[int(uid) for uid in successful_uids]}")
+    bt.logging.info(f"ping() failed uids: {[int(uid) for uid in failed_uids]}")
 
-    return successful_uids
+    return successful_uids, failed_uids
 
 
 async def get_query_api_nodes(dendrite, metagraph, n=0.1, timeout=30):

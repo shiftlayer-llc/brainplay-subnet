@@ -27,7 +27,7 @@ from game.utils.opSysPrompt import opSysPrompt
 from game.utils.spySysPrompt import spySysPrompt
 from game.utils.ruleSysPrompt import ruleSysPrompt
 from game.validator.reward import get_rewards
-from game.utils.uids import get_random_uids
+from game.utils.uids import choose_players
 import random
 import typing
 from game.utils.game import Competition, TParticipant
@@ -351,7 +351,7 @@ async def forward(self):
         self.step % 2
     ]
 
-    miner_uids, observer_hotkeys = await get_random_uids(
+    miner_uids, observer_hotkeys = await choose_players(
         self, competition=competition, k=2
     )
     # Exception handling when number of miners less than 2

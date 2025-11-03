@@ -86,6 +86,7 @@ class ScoreStore:
                     competition TEXT NOT NULL,
                     hotkey TEXT NOT NULL,
                     room_id TEXT NOT NULL,
+                    score INTEGER NOT NULL,
                     ts INTEGER NOT NULL,
                     synced_at INTEGER NOT NULL
                 );
@@ -243,55 +244,58 @@ class ScoreStore:
             cur.close()
         return rows
 
-    def window_scores_by_hotkey(
-        self, since_ts: float, competition: Optional[str] = None
+    def window_average_scores_by_hotkey(
+        self, competition: Optional[str], since_ts: float, end_ts: float
     ) -> Dict[str, float]:
         totals: Dict[str, float] = defaultdict(float)
         with self._lock:
             cur = self.conn.cursor()
-            params = [int(since_ts)]
+            params = [int(since_ts), int(end_ts), competition]
             query = """
-                SELECT rs, ro, bs, bo,
-                       score_rs, score_ro, score_bs, score_bo
-                FROM scores_all
-                WHERE ended_at >= ?
+                SELECT hotkey, SUM(score)/COUNT(*) FROM miner_records
+                WHERE ts >= ? AND ts < ? AND competition = ?
+                GROUP BY hotkey
             """
-            if competition is not None:
-                query += " AND competition = ?"
-                params.append(competition)
             cur.execute(query, tuple(params))
             rows = cur.fetchall()
             for row in rows:
-                rs, ro, bs, bo, score_rs, score_ro, score_bs, score_bo = row
-                if rs:
-                    totals[rs] += float(score_rs or 0.0)
-                if ro:
-                    totals[ro] += float(score_ro or 0.0)
-                if bs:
-                    totals[bs] += float(score_bs or 0.0)
-                if bo:
-                    totals[bo] += float(score_bo or 0.0)
+                hotkey, score = row
+                totals[hotkey] = float(score or 0.0)
             cur.close()
         return dict(totals)
 
-    def selection_counts_since(
-        self, since_ts: float, competition: Optional[str] = None
-    ) -> Dict[str, int]:
+    def records_in_window(
+        self, validator: str, competition: str, since_ts: float, end_ts: float
+    ) -> Dict[str, Dict[str, list]]:
         with self._lock:
             cur = self.conn.cursor()
-            if competition is None:
-                cur.execute(
-                    "SELECT hotkey, COUNT(*) FROM miner_records WHERE ts >= ? GROUP BY hotkey",
-                    (int(since_ts),),
-                )
-            else:
-                cur.execute(
-                    "SELECT hotkey, COUNT(*) FROM miner_records WHERE ts >= ? AND competition = ? GROUP BY hotkey",
-                    (int(since_ts), competition),
-                )
-            rows = cur.fetchall()
+            cur.execute(
+                """
+                SELECT hotkey, COUNT(*)
+                FROM miner_records
+                WHERE ts >= ? AND ts < ? AND competition = ? AND validator = ?
+                GROUP BY hotkey
+                """,
+                (int(since_ts), int(end_ts), competition, validator),
+            )
+            local_rows = cur.fetchall()
+
+            cur.execute(
+                """
+                SELECT hotkey, COUNT(*)
+                FROM miner_records
+                WHERE ts >= ? AND ts < ? AND competition = ?
+                GROUP BY hotkey
+                """,
+                (int(since_ts), int(end_ts), competition),
+            )
+            global_rows = cur.fetchall()
             cur.close()
-        return {hotkey: int(count) for hotkey, count in rows}
+
+        return (
+            {hotkey: int(count) for hotkey, count in local_rows},
+            {hotkey: int(count) for hotkey, count in global_rows},
+        )
 
     def max_scores_all_id(self) -> int:
         with self._lock:
@@ -547,7 +551,7 @@ class ScoreStore:
             )
             cur.executemany(
                 """
-                INSERT INTO miner_records(validator, competition, hotkey, room_id, ts, synced_at)
+                INSERT INTO miner_records(validator, competition, hotkey, room_id, score, ts, synced_at)
                 VALUES(?, ?, ?, ?, ?, ?)
                 """,
                 miner_records,

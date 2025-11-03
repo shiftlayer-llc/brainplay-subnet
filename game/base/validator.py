@@ -350,11 +350,30 @@ class BaseValidatorNeuron(BaseNeuron):
                 final_weights += weights
                 continue
 
-            comp_scores = self.score_store.window_scores_by_hotkey(since_ts, comp_value)
+            comp_scores = self.score_store.window_average_scores_by_hotkey(
+                comp_value, since_ts, end_ts
+            )
+            _, global_records_in_window = self.score_store.records_in_window(
+                self.wallet.hotkey.ss58_address, competition.value, since_ts, end_ts
+            )
+            # Set record count limit for setting weights to avoid actors with few high scores (e.g new registrations)
+            record_counts = sorted(
+                [
+                    global_records_in_window.get(hotkey, 0)
+                    for hotkey in self.metagraph.hotkeys
+                ],
+                reverse=True,
+            )
+            record_count_limit = record_counts[
+                int(len(record_counts) * 0.9)
+            ]  # 90th percentile
+            bt.logging.info(
+                f"Competition {comp_value} record count limit for weight setting: {record_count_limit} (Max: {record_counts[0]})"
+            )
+
             comp_scores_by_uid = {
-                self.metagraph.hotkeys.index(hotkey): score
-                for hotkey, score in comp_scores.items()
-                if hotkey in self.metagraph.hotkeys
+                self.metagraph.hotkeys.index(hotkey): comp_scores.get(hotkey, 0.0)
+                for hotkey in self.metagraph.hotkeys
             }
             bt.logging.info(
                 f"Competition {comp_value} scores: \n {json.dumps(comp_scores_by_uid, indent=2)}"
