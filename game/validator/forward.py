@@ -351,6 +351,9 @@ async def forward(self):
         self.step % 2
     ]
 
+    # Sync any pending score records to the database
+    await self.score_store.sync_pending()
+
     miner_uids, observer_hotkeys = await choose_players(
         self, competition=competition, k=2
     )
