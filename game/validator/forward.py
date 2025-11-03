@@ -22,7 +22,7 @@ import uuid
 import bittensor as bt
 import aiohttp
 import json
-from game.protocol import GameSynapse, GameSynapseOutput
+from game.protocol import GameChatMessage, GameSynapse, GameSynapseOutput
 from game.utils.opSysPrompt import opSysPrompt
 from game.utils.spySysPrompt import spySysPrompt
 from game.utils.ruleSysPrompt import ruleSysPrompt
@@ -510,6 +510,17 @@ async def forward(self):
             your_clue=your_clue,
             your_number=your_number,
             cards=cards,
+            chat_history=[
+                GameChatMessage(
+                    team=chat.team.value,
+                    sender=chat.sender.value,
+                    message=chat.message,
+                    clueText=chat.clueText,
+                    number=chat.number,
+                    guesses=chat.guesses,
+                )
+                for chat in game_state.chatHistory
+            ],
         )
 
         # 2. Main Game Logic
