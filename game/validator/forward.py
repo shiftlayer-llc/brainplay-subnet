@@ -360,7 +360,7 @@ async def forward(self):
     ]
 
     # Sync any pending score records to the database
-    await self.score_store.sync_pending()
+    await self.score_store.sync_scores_all()
 
     miner_uids, observer_hotkeys = await choose_players(
         self, competition=competition, k=2
