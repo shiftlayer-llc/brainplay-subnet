@@ -15,6 +15,14 @@ class Competition(Enum):
     CLUE_COMPETITION = "clue_competition"
     GUESS_COMPETITION = "guess_competition"
 
+    @property
+    def mechid(self) -> int:
+        if self == Competition.CLUE_COMPETITION:
+            return 0
+        elif self == Competition.GUESS_COMPETITION:
+            return 1
+        return None
+
 
 class TeamColor(Enum):
     RED = "red"

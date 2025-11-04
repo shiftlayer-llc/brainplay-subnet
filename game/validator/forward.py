@@ -269,6 +269,9 @@ async def get_llm_response(synapse: GameSynapse) -> GameSynapseOutput:
             return result.output_text
         except Exception as e:
             bt.logging.error(f"Error fetching response from GPT-5: {e}")
+            bt.logging.debug(
+                f"Messages sent to GPT-5: {json.dumps(messages, indent=2)}"
+            )
             return None
 
     # Build board and clue strings outside the f-string to avoid backslash-in-expression errors.
@@ -308,9 +311,14 @@ async def get_llm_response(synapse: GameSynapse) -> GameSynapseOutput:
     )
     messages.append({"role": "user", "content": userPrompt})
 
-    response_str = await get_gpt5_response(
-        messages
-    )  # , effort = "medium" if synapse.your_role == "spymaster" else "minimal")
+    retry = 0
+    while retry < 2:
+        response_str = await get_gpt5_response(
+            messages
+        )  # , effort = "medium" if synapse.your_role == "spymaster" else "minimal")
+        if response_str:
+            break
+        retry += 1
     # bt.logging.debug(f"💬 LLM Response: {response_str}")
     response_dict = json.loads(response_str)
     if "clue" in response_dict:
@@ -352,7 +360,7 @@ async def forward(self):
     ]
 
     # Sync any pending score records to the database
-    await self.score_store.sync_pending()
+    await self.score_store.sync_scores_all()
 
     miner_uids, observer_hotkeys = await choose_players(
         self, competition=competition, k=2
@@ -743,108 +751,108 @@ async def forward(self):
                     )
                     await update_room(self, game_state, roomId)
                     break
+            else:
+                # Update the game state
+                choose_assasin = False
 
-            # Update the game state
-            choose_assasin = False
-
-            if len(guesses) > your_number + 1:
-                bt.logging.info(
-                    f"⚠️ Too many guesses '{guesses}' provided by miner {to_uid} (allowed: {your_number + 1})."
+                if len(guesses) > your_number + 1:
+                    bt.logging.info(
+                        f"⚠️ Too many guesses '{guesses}' provided by miner {to_uid} (allowed: {your_number + 1})."
+                    )
+                    guesses = guesses[: your_number + 1]
+                    bt.logging.info(f"Truncated guesses to: {guesses}")
+                game_state.currentGuesses = guesses
+                game_state.chatHistory.append(
+                    ChatMessage(
+                        sender=Role.OPERATIVE,
+                        message=f"Guessed cards: {', '.join(guesses)}",
+                        team=game_state.currentTeam,
+                        reasoning=reasoning,
+                        guesses=guesses,
+                    )
                 )
-                guesses = guesses[: your_number + 1]
-                bt.logging.info(f"Truncated guesses to: {guesses}")
-            game_state.currentGuesses = guesses
-            game_state.chatHistory.append(
-                ChatMessage(
-                    sender=Role.OPERATIVE,
-                    message=f"Guessed cards: {', '.join(guesses)}",
-                    team=game_state.currentTeam,
-                    reasoning=reasoning,
-                    guesses=guesses,
-                )
-            )
-            for guess in guesses:
-                card = next((c for c in game_state.cards if c.word == guess), None)
-                if card is None or card.is_revealed:
-                    bt.logging.debug(f"Invalid guess: {guess}")
-                    continue
-                card.is_revealed = True
-                card.was_recently_revealed = True
-                if card.color == "red":
-                    game_state.remainingRed -= 1
-                elif card.color == "blue":
-                    game_state.remainingBlue -= 1
+                for guess in guesses:
+                    card = next((c for c in game_state.cards if c.word == guess), None)
+                    if card is None or card.is_revealed:
+                        bt.logging.debug(f"Invalid guess: {guess}")
+                        continue
+                    card.is_revealed = True
+                    card.was_recently_revealed = True
+                    if card.color == "red":
+                        game_state.remainingRed -= 1
+                    elif card.color == "blue":
+                        game_state.remainingBlue -= 1
 
-                if game_state.remainingRed == 0:
-                    game_state.gameWinner = TeamColor.RED
-                    resetAnimations(self, game_state.cards)
-                    end_reason = "red_all_cards"
-                    bt.logging.info(
-                        f"🎉 All red cards found! Winner: {game_state.gameWinner}"
-                    )
-                    game_state.chatHistory.append(
-                        ChatMessage(
-                            sender=Role.OPERATIVE,
-                            message=f"🎉 All red cards found!",
-                            team=game_state.currentTeam,
-                            guesses=guesses,
-                            reasoning=reasoning,
+                    if game_state.remainingRed == 0:
+                        game_state.gameWinner = TeamColor.RED
+                        resetAnimations(self, game_state.cards)
+                        end_reason = "red_all_cards"
+                        bt.logging.info(
+                            f"🎉 All red cards found! Winner: {game_state.gameWinner}"
                         )
-                    )
-                    await update_room(self, game_state, roomId)
-                    break
-                elif game_state.remainingBlue == 0:
-                    game_state.gameWinner = TeamColor.BLUE
-                    resetAnimations(self, game_state.cards)
-                    end_reason = "blue_all_cards"
-                    bt.logging.info(
-                        f"🎉 All blue cards found! Winner: {game_state.gameWinner}"
-                    )
-                    game_state.chatHistory.append(
-                        ChatMessage(
-                            sender=Role.OPERATIVE,
-                            message=f"🎉 All blue cards found!",
-                            team=game_state.currentTeam,
-                            guesses=guesses,
-                            reasoning=reasoning,
+                        game_state.chatHistory.append(
+                            ChatMessage(
+                                sender=Role.OPERATIVE,
+                                message=f"🎉 All red cards found!",
+                                team=game_state.currentTeam,
+                                guesses=guesses,
+                                reasoning=reasoning,
+                            )
                         )
-                    )
-                    await update_room(self, game_state, roomId)
-                    break
+                        await update_room(self, game_state, roomId)
+                        break
+                    elif game_state.remainingBlue == 0:
+                        game_state.gameWinner = TeamColor.BLUE
+                        resetAnimations(self, game_state.cards)
+                        end_reason = "blue_all_cards"
+                        bt.logging.info(
+                            f"🎉 All blue cards found! Winner: {game_state.gameWinner}"
+                        )
+                        game_state.chatHistory.append(
+                            ChatMessage(
+                                sender=Role.OPERATIVE,
+                                message=f"🎉 All blue cards found!",
+                                team=game_state.currentTeam,
+                                guesses=guesses,
+                                reasoning=reasoning,
+                            )
+                        )
+                        await update_room(self, game_state, roomId)
+                        break
 
-                if card.color == "assassin":
-                    choose_assasin = True
-                    game_state.gameWinner = (
-                        TeamColor.RED
-                        if game_state.currentTeam == TeamColor.BLUE
-                        else TeamColor.BLUE
-                    )
-                    resetAnimations(self, game_state.cards)
-                    end_reason = "assassin"
-                    bt.logging.info(
-                        f"💀 Assassin card '{card.word}' found! Game over. Winner: {game_state.gameWinner}"
-                    )
-                    game_state.chatHistory.append(
-                        ChatMessage(
-                            sender=Role.OPERATIVE,
-                            message=f"💀 Assassin card '{card.word}' found! Game over.",
-                            team=game_state.currentTeam,
-                            guesses=guesses,
-                            reasoning=reasoning,
+                    if card.color == "assassin":
+                        choose_assasin = True
+                        game_state.gameWinner = (
+                            TeamColor.RED
+                            if game_state.currentTeam == TeamColor.BLUE
+                            else TeamColor.BLUE
                         )
-                    )
-                    await update_room(self, game_state, roomId)
-                    break
+                        resetAnimations(self, game_state.cards)
+                        end_reason = "assassin"
+                        bt.logging.info(
+                            f"💀 Assassin card '{card.word}' found! Game over. Winner: {game_state.gameWinner}"
+                        )
+                        game_state.chatHistory.append(
+                            ChatMessage(
+                                sender=Role.OPERATIVE,
+                                message=f"💀 Assassin card '{card.word}' found! Game over.",
+                                team=game_state.currentTeam,
+                                guesses=guesses,
+                                reasoning=reasoning,
+                            )
+                        )
+                        await update_room(self, game_state, roomId)
+                        break
 
-                if card.color != game_state.currentTeam.value:
-                    # If the card is not of our team color, we break
-                    # This is to ensure that the operative only guesses cards of their team color
-                    bt.logging.warning(
-                        f"❌ Card {card.word} is not of team color {game_state.currentTeam.value}, breaking."
-                    )
+                    if card.color != game_state.currentTeam.value:
+                        # If the card is not of our team color, we break
+                        # This is to ensure that the operative only guesses cards of their team color
+                        bt.logging.warning(
+                            f"❌ Card {card.word} is not of team color {game_state.currentTeam.value}, breaking."
+                        )
+                        break
+                if choose_assasin or game_state.gameWinner is not None:
                     break
-            if choose_assasin or game_state.gameWinner is not None:
-                break
 
         # change the role
         game_state.previousRole = game_state.currentRole

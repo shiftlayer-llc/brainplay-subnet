@@ -21,7 +21,6 @@
 import copy
 import os
 import time
-import json
 import numpy as np
 import asyncio
 import argparse
@@ -105,6 +104,7 @@ class BaseValidatorNeuron(BaseNeuron):
         bt.logging.info(f"Using backend: {self.backend_base}")
         scores_endpoint = f"{self.backend_base}/api/v1/rooms/score"
         scores_fetch_endpoint = f"{self.backend_base}/api/v1/rooms/sync"
+        self.active_miners_endpoint = f"{self.backend_base}/api/v1/rooms/miner/active"
         self.score_store = ScoreStore(
             scores_db_path,
             backend_url=scores_endpoint,
@@ -345,6 +345,8 @@ class BaseValidatorNeuron(BaseNeuron):
         end_ts = self.subtensor.get_timestamp().timestamp() - (blocks_since_epoch * 12)
         since_ts = end_ts - self.scoring_window_seconds
 
+        bt.logging.info(f"Setting weights using scores from {since_ts} to {end_ts}")
+
         latest_ts = self.score_store.latest_scores_all_timestamp()
 
         age_seconds = now - latest_ts
@@ -352,13 +354,9 @@ class BaseValidatorNeuron(BaseNeuron):
             bt.logging.warning(
                 f"Latest synced score is older than 1 hour ({age_seconds:.0f}s). Switching to burn code."
             )
-            burn_weights = np.zeros(self.metagraph.n, dtype=np.float32)
-            if self.metagraph.n > 0:
-                burn_weights[0] = 1.0
-            self._set_weights(burn_weights)
+            self._burn_weights()
             return
 
-        final_weights = np.zeros(self.metagraph.n, dtype=np.float32)
         for competition in Competition:
             weights = np.zeros(self.metagraph.n, dtype=np.float32)
             comp_value = competition.value
@@ -368,22 +366,17 @@ class BaseValidatorNeuron(BaseNeuron):
                 bt.logging.warning(
                     f"Not enough games for competition {comp_value}; skipping its allocation. ({comp_games} < 300)"
                 )
-                weights[0] = 1.0
-                final_weights += weights
+                self._burn_weights(competition.mechid)
                 continue
 
-            comp_scores = self.score_store.window_average_scores_by_hotkey(
-                comp_value, since_ts, end_ts
-            )
-            _, global_records_in_window = self.score_store.records_in_window(
-                self.wallet.hotkey.ss58_address, competition.value, since_ts, end_ts
+            avg_scores, total_scores, counts = (
+                self.score_store.window_average_scores_by_hotkey(
+                    comp_value, since_ts, end_ts
+                )
             )
             # Set record count limit for setting weights to avoid actors with few high scores (e.g new registrations)
             record_counts = sorted(
-                [
-                    global_records_in_window.get(hotkey, 0)
-                    for hotkey in self.metagraph.hotkeys
-                ],
+                [counts.get(hotkey, 0) for hotkey in self.metagraph.hotkeys],
                 reverse=True,
             )
             record_count_limit = record_counts[
@@ -393,30 +386,33 @@ class BaseValidatorNeuron(BaseNeuron):
                 f"Competition {comp_value} record count limit for weight setting: {record_count_limit} (Max: {record_counts[0]})"
             )
 
-            comp_scores_by_uid = {
-                self.metagraph.hotkeys.index(hotkey): comp_scores.get(hotkey, 0.0)
-                for hotkey in self.metagraph.hotkeys
+            avg_scores_by_uid = {
+                uid: avg_scores.get(hotkey, 0.0)
+                for uid, hotkey in enumerate(self.metagraph.hotkeys)
             }
-            bt.logging.info(
-                f"Competition {comp_value} scores: \n {json.dumps(comp_scores_by_uid, indent=2)}"
-            )
-            if not comp_scores:
+            avg_scores_after_record_limit = {
+                hotkey: score
+                for hotkey, score in avg_scores.items()
+                if counts.get(hotkey, 0) >= record_count_limit
+            }
+            if not avg_scores_after_record_limit:
                 bt.logging.warning(
                     f"No scores for competition {comp_value}; skipping its allocation."
                 )
                 continue
 
-            top_score = max(comp_scores.values())
+            top_score = max(avg_scores_after_record_limit.values())
             if top_score <= 0:
                 bt.logging.warning(
                     f"Top score for competition {comp_value} is non-positive; skipping."
                 )
-                weights[0] = 1.0
-                final_weights += weights
+                self._burn_weights(competition.mechid)
                 continue
 
             top_hotkeys = [
-                hotkey for hotkey, score in comp_scores.items() if score == top_score
+                hotkey
+                for hotkey, score in avg_scores_after_record_limit.items()
+                if score == top_score
             ]
             winner_uids = []
             for hotkey in top_hotkeys:
@@ -430,51 +426,164 @@ class BaseValidatorNeuron(BaseNeuron):
                 bt.logging.warning(
                     f"No top hotkeys for competition {comp_value} present in metagraph; skipping."
                 )
-                weights[0] = 1.0
-                final_weights += weights
+                self._burn_weights(competition.mechid)
                 continue
 
             if len(winner_uids) > 1:
                 bt.logging.info(
                     f"Competition {comp_value} has multiple winners: {winner_uids} with score {top_score}; skipping"
                 )
-                weights[0] = 1.0
-                final_weights += weights
+                self._burn_weights(competition.mechid)
                 continue
 
             winner_uid = winner_uids[0]
             weights[winner_uid] = 1.0
+            winner_hotkey = self.metagraph.hotkeys[winner_uid]
 
             bt.logging.info(
-                f"Competition {comp_value} winner: Miner {winner_uid} with score {top_score}"
+                f"Competition {comp_value} winner: Miner {winner_uid} Games: {counts.get(winner_hotkey, 0)}, Score: {total_scores.get(winner_hotkey, 0)}, WinRate: {(top_score * 100):.2f}%"
             )
 
-            final_weights += weights
-
-        if final_weights.sum() == 0:
-            bt.logging.warning(
-                "No competition winners determined; skipping set_weights."
-            )
-            return
-
-        # Normalize final weights
-        self.scores = final_weights / sum(final_weights)
-
-        bt.logging.info(f"Assigned scores: {self.scores}")
-
-        if np.isnan(self.scores).any():
-            bt.logging.warning(
-                "Scores contain NaN values. This may be due to a lack of responses from miners, or a bug in your reward functions."
+            self._log_competition_scores(
+                comp_value=comp_value,
+                counts=counts,
+                total_scores=total_scores,
+                avg_scores_by_uid=avg_scores_by_uid,
+                record_count_limit=record_count_limit,
             )
 
-        norm = np.linalg.norm(self.scores, ord=1, axis=0, keepdims=True)
-        if np.any(norm == 0) or np.isnan(norm).any():
-            norm = np.ones_like(norm)
+            norm = np.linalg.norm(weights, ord=1, axis=0, keepdims=True)
+            if np.any(norm == 0) or np.isnan(norm).any():
+                norm = np.ones_like(norm)
+            raw_weights = weights / norm
 
-        raw_weights = self.scores / norm
-        self._set_weights(raw_weights)
+            self._set_weights(competition.mechid, raw_weights)
 
-    def _set_weights(self, weights: np.ndarray) -> None:
+    def _log_competition_scores(
+        self,
+        *,
+        comp_value: str,
+        counts: dict,
+        total_scores: dict,
+        avg_scores_by_uid: dict,
+        record_count_limit: int,
+    ) -> None:
+        """Log competition scores as a table with win-rate based ordering."""
+        table_rows = []
+        for uid, hotkey in enumerate(self.metagraph.hotkeys):
+            games_played = int(counts.get(hotkey, 0))
+            total_wins = float(total_scores.get(hotkey, 0.0))
+            win_rate_value = float(avg_scores_by_uid.get(uid, 0.0))
+            table_rows.append(
+                {
+                    "uid": uid,
+                    "hotkey": hotkey,
+                    "games": games_played,
+                    "wins": total_wins,
+                    "win_rate": win_rate_value,
+                    "below_limit": games_played < record_count_limit,
+                }
+            )
+
+        normal_rows = [row for row in table_rows if not row["below_limit"]]
+        below_limit_rows = [row for row in table_rows if row["below_limit"]]
+
+        normal_rows.sort(key=lambda row: (-row["win_rate"], -row["games"], row["uid"]))
+        below_limit_rows.sort(
+            key=lambda row: (-row["win_rate"], -row["games"], row["uid"])
+        )
+
+        ordered_rows = normal_rows + below_limit_rows
+
+        headers = [
+            "Rank",
+            "UID",
+            "Hotkey",
+            "Games Played",
+            "Score(Wins)",
+            "Win Rate",
+        ]
+        table_data = [headers]
+        for rank, row in enumerate(ordered_rows, start=1):
+            wins_value = row["wins"]
+            wins_str = (
+                str(int(round(wins_value)))
+                if abs(wins_value - round(wins_value)) < 1e-6
+                else f"{wins_value:.2f}"
+            )
+            table_data.append(
+                [
+                    str(rank),
+                    str(row["uid"]),
+                    row["hotkey"],
+                    str(row["games"]),
+                    wins_str,
+                    f"{row['win_rate'] * 100:.2f}%",
+                ]
+            )
+
+        column_widths = [
+            max(len(row[col_index]) for row in table_data)
+            for col_index in range(len(headers))
+        ]
+
+        border_line = "+" + "+".join("-" * (width + 2) for width in column_widths) + "+"
+
+        def _format_row(
+            cells: List[str],
+            *,
+            cell_prefix: str = "",
+            cell_suffix: str = "",
+        ) -> str:
+            return (
+                "| "
+                + " | ".join(
+                    f"{cell_prefix}{cell.ljust(width)}{cell_suffix}"
+                    for cell, width in zip(cells, column_widths)
+                )
+                + " |"
+            )
+
+        header_line = _format_row(table_data[0])
+
+        table_lines = [border_line, header_line, border_line]
+
+        grey_section_started = False
+        for row_index, row_cells in enumerate(table_data[1:], start=0):
+            is_first_row = row_index == 0
+            is_below_limit = ordered_rows[row_index]["below_limit"]
+            if is_below_limit and not grey_section_started:
+                grey_section_started = True
+                table_lines.append(border_line)
+            if is_first_row:
+                formatted_line = _format_row(
+                    row_cells, cell_prefix="\033[92m", cell_suffix="\033[0m"
+                )
+            elif is_below_limit:
+                formatted_line = _format_row(
+                    row_cells, cell_prefix="\033[90m", cell_suffix="\033[0m"
+                )
+            else:
+                formatted_line = _format_row(row_cells)
+            table_lines.append(formatted_line)
+
+        table_lines.append(border_line)
+
+        table_output = "\n".join(table_lines)
+        bt.logging.info(f"{comp_value} scores:\n{table_output}")
+
+    def _burn_weights(self, mechid: int = None) -> None:
+        """Sets weights to burn code (all weight to UID 0)."""
+        burn_weights = np.zeros(self.metagraph.n, dtype=np.float32)
+        if self.metagraph.n > 0:
+            burn_weights[0] = 1.0
+        if mechid is None:
+            self._set_weights(0, burn_weights)
+            self._set_weights(1, burn_weights)
+        else:
+            self._set_weights(mechid, burn_weights)
+
+    def _set_weights(self, mechid: int, weights: np.ndarray) -> None:
         weights = np.asarray(weights, dtype=np.float32)
         (
             processed_weight_uids,
@@ -492,19 +601,23 @@ class BaseValidatorNeuron(BaseNeuron):
         ) = convert_weights_and_uids_for_emit(
             uids=processed_weight_uids, weights=processed_weights
         )
+        bt.logging.info(
+            f"Setting weights for mechid={mechid}: UIDs: {uint_uids}, Weights: {uint_weights}"
+        )
         result, msg = self.subtensor.set_weights(
             wallet=self.wallet,
             netuid=self.config.netuid,
             uids=uint_uids,
+            mechid=mechid,
             weights=uint_weights,
             wait_for_finalization=False,
             wait_for_inclusion=False,
             version_key=self.spec_version,
         )
         if result is True:
-            bt.logging.info("set_weights on chain successfully!")
+            bt.logging.info(f"set_weights(mechid={mechid}) on chain successfully!")
         else:
-            bt.logging.error("set_weights failed", msg)
+            bt.logging.error(f"set_weights(mechid={mechid}) failed", msg)
 
     def resync_metagraph(self):
         """Resyncs the metagraph and updates the hotkeys and moving averages based on the new metagraph."""
