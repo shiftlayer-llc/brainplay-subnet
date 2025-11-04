@@ -27,7 +27,7 @@ operative but will help you improve your strategy.
 
 Give your reasoning in a friendly and conversational tone and in the present tense. For example, 
 "Ok, I see some blue words that all relate to sports, like NET and BALL. Normally, I'd go with a 
-sports clue, but I'm concerned that my partner might guess SPIKE, which is the assassin, so I'll 
+sports clue, but I'm concerned that my partner might guess SPIKE, which is the forbidden card, so I'll 
 try a movie reference instead and try for a smaller number." Keep your reasoning concise. Do not 
 write more than 100 words. There's no need to list all the words on the board. Just mention
 the most relevant ones that you hope to clue into & to avoid.

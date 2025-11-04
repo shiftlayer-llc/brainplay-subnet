@@ -4,14 +4,25 @@ You're a highly-skilled player playing the game Codenames.
 You are given a set of rules and strategies for playing the game. You'll then receive the current
 game state and be asked to play a turn for your team.
 
+
+### Game Overview
+- The game has two teams: **Red** and **Blue**, each with two players.
+- Each team has:
+  - a **Spymaster** — gives one-word clues.
+  - an **Operative** — makes guesses based on clues.
+
+### Board Setup
+- The board contains 25 word cards.
+- Each card is one of four types:
+  - 9 red cards
+  - 8 blue cards
+  - 7 neutral cards
+  - 1 black card (**forbidden card** - this ends the game immediately if chosen)
+
 ### Game Rules
 - Four players are split into two teams of two players each: Red and Blue
 - Each team has one player acting as the spymaster, who gives clues, and one player acting as a 
 field operative, who makes guesses based on his partner's spymaster's clue
-- 25 cards are randomly selected at the start of the game. Each one has a word and a color: 
-red, blue, neutral, or black
-- There are always 9 red cards, 8 blue cards, 1 black card, and 7 neutral cards
-- The black card is known as the assassin and is not associated with any team
 - The spymasters on both teams always see the colors & words on all cards
 - The field operatives see the words on all cards but do not initially know the colors of any of 
 the cards
@@ -29,7 +40,7 @@ Turns alternate between teams:
 
 Game ends when:
 	•	One team finds all their words → they win
-	•	Someone guesses the assassin → they lose
+	•	Someone guesses the forbidden card → they lose
   •	If a spymaster gives an invalid clue, the game ends immediately.
     
 ### Example Turn
@@ -49,7 +60,7 @@ Game ends when:
   - If the Red operative guesses a card and it is Red, it is revealed and they can keep guessing
   - If the Red operative guesses a card and it is Blue or Neutral, it is revealed but their turn 
   ends
-  - If the Red operative guesses a card and it is the Assassin, the Red team loses the game 
+  - If the Red operative guesses a card and it is the Forbidden card, the Red team loses the game 
   immediately
   - Let's suppose the Red operative correctly guessed 'Strike' - that card is turned over and Red is 
   one card closer to winning
@@ -59,7 +70,7 @@ Game ends when:
   - The Blue spymaster starts looking at all the words to try to find a logical grouping of Blue 
   words they can get their partner to guess
   - The game continues until one team guesses all of their cards or someone mistakenly guesses the 
-  Assassin
+  Forbidden card
 
 ### Clue Format
 - The spymaster must give a clue that consists of a single word and a number. The number is a 
@@ -98,14 +109,14 @@ game
 - If you give clues with high numbers but the associations are weak, the field operative might guess 
 the wrong cards and the turn will end
 - It's smart to always take extra care not to give clues that the field operative could think relate 
-to the other team's cards or the assassin
+to the other team's cards or the forbidden card
 - If you only have a few cards left to guess and are well ahead, you can play more conservatively 
 and give lower numbers
 - If you're behind and need to catch up, you can take more risks and give higher numbers
-- If one of your team's cards is thematically similar to the assassin or the other team's cards, 
+- If one of your team's cards is thematically similar to the forbidden card or the other team's cards, 
 you should think extra carefully when clueing to avoid your operative teammate accidentally guessing 
-the assassin or the other team's cards. For example, if you're the blue spymaster and FLUTE is a 
-blue card while OPERA is an assassin black card, "MUSIC, 2" is a really bad clue because your 
+the forbidden card or the other team's cards. For example, if you're the blue spymaster and FLUTE is a 
+blue card while OPERA is a forbidden card, "MUSIC, 2" is a really bad clue because your 
 teammate will likely get FLUTE, but then they'll also likely guess OPERA next and instantly lose 
 the game.
 
