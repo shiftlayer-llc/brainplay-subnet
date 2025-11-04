@@ -387,8 +387,8 @@ class BaseValidatorNeuron(BaseNeuron):
                 reverse=True,
             )
             record_count_limit = record_counts[
-                int(len(record_counts) * 0.9)
-            ]  # 90th percentile
+                int(len(record_counts) * 0.5)
+            ]  # 50th percentile
             bt.logging.info(
                 f"Competition {comp_value} record count limit for weight setting: {record_count_limit} (Max: {record_counts[0]})"
             )
