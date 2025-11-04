@@ -353,13 +353,9 @@ class BaseValidatorNeuron(BaseNeuron):
             bt.logging.warning(
                 f"Latest synced score is older than 1 hour ({age_seconds:.0f}s). Switching to burn code."
             )
-            burn_weights = np.zeros(self.metagraph.n, dtype=np.float32)
-            if self.metagraph.n > 0:
-                burn_weights[0] = 1.0
-            self._set_weights(burn_weights)
+            self._burn_weights()
             return
 
-        final_weights = np.zeros(self.metagraph.n, dtype=np.float32)
         for competition in Competition:
             weights = np.zeros(self.metagraph.n, dtype=np.float32)
             comp_value = competition.value
@@ -369,8 +365,7 @@ class BaseValidatorNeuron(BaseNeuron):
                 bt.logging.warning(
                     f"Not enough games for competition {comp_value}; skipping its allocation. ({comp_games} < 300)"
                 )
-                weights[0] = 1.0
-                final_weights += weights
+                self._burn_weights(competition.mechid)
                 continue
 
             avg_scores, total_scores, counts = (
@@ -410,8 +405,7 @@ class BaseValidatorNeuron(BaseNeuron):
                 bt.logging.warning(
                     f"Top score for competition {comp_value} is non-positive; skipping."
                 )
-                weights[0] = 1.0
-                final_weights += weights
+                self._burn_weights(competition.mechid)
                 continue
 
             top_hotkeys = [
@@ -431,16 +425,14 @@ class BaseValidatorNeuron(BaseNeuron):
                 bt.logging.warning(
                     f"No top hotkeys for competition {comp_value} present in metagraph; skipping."
                 )
-                weights[0] = 1.0
-                final_weights += weights
+                self._burn_weights(competition.mechid)
                 continue
 
             if len(winner_uids) > 1:
                 bt.logging.info(
                     f"Competition {comp_value} has multiple winners: {winner_uids} with score {top_score}; skipping"
                 )
-                weights[0] = 1.0
-                final_weights += weights
+                self._burn_weights(competition.mechid)
                 continue
 
             winner_uid = winner_uids[0]
@@ -459,30 +451,12 @@ class BaseValidatorNeuron(BaseNeuron):
                 record_count_limit=record_count_limit,
             )
 
-            final_weights += weights
+            norm = np.linalg.norm(weights, ord=1, axis=0, keepdims=True)
+            if np.any(norm == 0) or np.isnan(norm).any():
+                norm = np.ones_like(norm)
+            raw_weights = weights / norm
 
-        if final_weights.sum() == 0:
-            bt.logging.warning(
-                "No competition winners determined; skipping set_weights."
-            )
-            return
-
-        # Normalize final weights
-        self.scores = final_weights / sum(final_weights)
-
-        bt.logging.info(f"Assigned scores: {self.scores}")
-
-        if np.isnan(self.scores).any():
-            bt.logging.warning(
-                "Scores contain NaN values. This may be due to a lack of responses from miners, or a bug in your reward functions."
-            )
-
-        norm = np.linalg.norm(self.scores, ord=1, axis=0, keepdims=True)
-        if np.any(norm == 0) or np.isnan(norm).any():
-            norm = np.ones_like(norm)
-
-        raw_weights = self.scores / norm
-        self._set_weights(raw_weights)
+            self._set_weights(competition.mechid, raw_weights)
 
     def _log_competition_scores(
         self,
@@ -597,7 +571,18 @@ class BaseValidatorNeuron(BaseNeuron):
         table_output = "\n".join(table_lines)
         bt.logging.info(f"{comp_value} scores:\n{table_output}")
 
-    def _set_weights(self, weights: np.ndarray) -> None:
+    def _burn_weights(self, mechid: int = None) -> None:
+        """Sets weights to burn code (all weight to UID 0)."""
+        burn_weights = np.zeros(self.metagraph.n, dtype=np.float32)
+        if self.metagraph.n > 0:
+            burn_weights[0] = 1.0
+        if mechid is None:
+            self._set_weights(0, burn_weights)
+            self._set_weights(1, burn_weights)
+        else:
+            self._set_weights(mechid, burn_weights)
+
+    def _set_weights(self, mechid: int, weights: np.ndarray) -> None:
         weights = np.asarray(weights, dtype=np.float32)
         (
             processed_weight_uids,
@@ -615,19 +600,23 @@ class BaseValidatorNeuron(BaseNeuron):
         ) = convert_weights_and_uids_for_emit(
             uids=processed_weight_uids, weights=processed_weights
         )
+        bt.logging.info(
+            f"Setting weights for mechid={mechid}: UIDs: {uint_uids}, Weights: {uint_weights}"
+        )
         result, msg = self.subtensor.set_weights(
             wallet=self.wallet,
             netuid=self.config.netuid,
             uids=uint_uids,
+            mechid=mechid,
             weights=uint_weights,
             wait_for_finalization=False,
             wait_for_inclusion=False,
             version_key=self.spec_version,
         )
         if result is True:
-            bt.logging.info("set_weights on chain successfully!")
+            bt.logging.info(f"set_weights(mechid={mechid}) on chain successfully!")
         else:
-            bt.logging.error("set_weights failed", msg)
+            bt.logging.error(f"set_weights(mechid={mechid}) failed", msg)
 
     def resync_metagraph(self):
         """Resyncs the metagraph and updates the hotkeys and moving averages based on the new metagraph."""
