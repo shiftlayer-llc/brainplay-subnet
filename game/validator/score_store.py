@@ -236,7 +236,7 @@ class ScoreStore:
             cur = self.conn.cursor()
             params = [int(since_ts), int(end_ts), competition]
             query = """
-                SELECT hotkey, SUM(score)/COUNT(*) FROM miner_records
+                SELECT hotkey, SUM(score) * 1.0 / COUNT(*) FROM miner_records
                 WHERE ts >= ? AND ts < ? AND competition = ?
                 GROUP BY hotkey
             """
