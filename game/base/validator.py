@@ -344,6 +344,8 @@ class BaseValidatorNeuron(BaseNeuron):
         end_ts = self.subtensor.get_timestamp().timestamp() - (blocks_since_epoch * 12)
         since_ts = end_ts - self.scoring_window_seconds
 
+        bt.logging.info(f"Setting weights using scores from {since_ts} to {end_ts}")
+
         latest_ts = self.score_store.latest_scores_all_timestamp()
 
         age_seconds = now - latest_ts

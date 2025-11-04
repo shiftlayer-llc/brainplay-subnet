@@ -269,6 +269,9 @@ async def get_llm_response(synapse: GameSynapse) -> GameSynapseOutput:
             return result.output_text
         except Exception as e:
             bt.logging.error(f"Error fetching response from GPT-5: {e}")
+            bt.logging.debug(
+                f"Messages sent to GPT-5: {json.dumps(messages, indent=2)}"
+            )
             return None
 
     # Build board and clue strings outside the f-string to avoid backslash-in-expression errors.
@@ -308,9 +311,14 @@ async def get_llm_response(synapse: GameSynapse) -> GameSynapseOutput:
     )
     messages.append({"role": "user", "content": userPrompt})
 
-    response_str = await get_gpt5_response(
-        messages
-    )  # , effort = "medium" if synapse.your_role == "spymaster" else "minimal")
+    retry = 0
+    while retry < 2:
+        response_str = await get_gpt5_response(
+            messages
+        )  # , effort = "medium" if synapse.your_role == "spymaster" else "minimal")
+        if response_str:
+            break
+        retry += 1
     # bt.logging.debug(f"💬 LLM Response: {response_str}")
     response_dict = json.loads(response_str)
     if "clue" in response_dict:
