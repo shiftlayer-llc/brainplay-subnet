@@ -400,13 +400,18 @@ class BaseValidatorNeuron(BaseNeuron):
             bt.logging.info(
                 f"Competition {comp_value} scores: \n {json.dumps(comp_scores_by_uid, indent=2)}"
             )
-            if not comp_scores:
+            comp_scores_after_record_limit = {
+                hotkey: score
+                for hotkey, score in comp_scores.items()
+                if global_records_in_window.get(hotkey, 0) >= record_count_limit
+            }
+            if not comp_scores_after_record_limit:
                 bt.logging.warning(
                     f"No scores for competition {comp_value}; skipping its allocation."
                 )
                 continue
 
-            top_score = max(comp_scores.values())
+            top_score = max(comp_scores_after_record_limit.values())
             if top_score <= 0:
                 bt.logging.warning(
                     f"Top score for competition {comp_value} is non-positive; skipping."
@@ -416,7 +421,9 @@ class BaseValidatorNeuron(BaseNeuron):
                 continue
 
             top_hotkeys = [
-                hotkey for hotkey, score in comp_scores.items() if score == top_score
+                hotkey
+                for hotkey, score in comp_scores_after_record_limit.items()
+                if score == top_score
             ]
             winner_uids = []
             for hotkey in top_hotkeys:
