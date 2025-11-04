@@ -435,10 +435,17 @@ class ScoreStore:
                         )
                         return
                     self._upsert_scores_all(payload["data"])
-                    bt.logging.info(
-                        f"Synced Score: {params['since_id'] + payload['meta']['count']} / {payload['meta']['total']}"
-                    )
+                    if (
+                        params["since_id"] + payload["meta"]["count"]
+                        <= payload["meta"]["total"]
+                    ):
+                        bt.logging.info(
+                            f"Synced Score: {params['since_id'] + payload['meta']['count']} / {payload['meta']['total']}"
+                        )
                     if not payload["meta"]["has_more"]:
+                        bt.logging.info(
+                            f"Sync completed: {payload['meta']['total']} scores synced."
+                        )
                         break
                     params["since_id"] = payload["meta"]["next_since_id"]
         except Exception as err:  # noqa: BLE001
