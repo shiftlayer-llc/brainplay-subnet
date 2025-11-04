@@ -125,11 +125,32 @@ class BaseValidatorNeuron(BaseNeuron):
             bt.logging.info(
                 f"Initializing wandb with project name: {self.config.wandb.project_name}, entity: {self.config.wandb.entity}"
             )
-            self.wandb_run = wandb.init(
-                project=self.config.wandb.project_name,
-                entity=self.config.wandb.entity,
-                name=f"validator-{self.wallet.hotkey.ss58_address[:6]}",
-            )
+            self.wandb_run = None
+
+            def _start_wandb_run():
+                if self.wandb_run:
+                    try:
+                        self.wandb_run.finish()
+                    except Exception as err:
+                        bt.logging.warning(
+                            f"Failed to finish existing Wandb run: {err}"
+                        )
+                self.wandb_run = wandb.init(
+                    project=self.config.wandb.project_name,
+                    entity=self.config.wandb.entity,
+                    name=f"validator-{self.wallet.hotkey.ss58_address[:6]}",
+                )
+                if self.config.wandb.restart_interval > 0:
+                    self._wandb_restart_timer = threading.Timer(
+                        self.config.wandb.restart_interval * 3600, _start_wandb_run
+                    )
+                    self._wandb_restart_timer.daemon = True
+                    self._wandb_restart_timer.start()
+                    bt.logging.info(
+                        f"Wandb auto-restart timer scheduled in {self.config.wandb.restart_interval} hours."
+                    )
+
+            _start_wandb_run()
         else:
             bt.logging.info("Wandb logging is turned off.")
             self.wandb_run = None
@@ -239,6 +260,8 @@ class BaseValidatorNeuron(BaseNeuron):
                 bt.logging.success("Validator killed by keyboard interrupt.")
                 if self.wandb_run:
                     self.wandb_run.finish()
+                if self._wandb_restart_timer:
+                    self._wandb_restart_timer.cancel()
                 exit()
 
             # In case of unforeseen errors, the validator will log the error and continue operations.
@@ -272,9 +295,8 @@ class BaseValidatorNeuron(BaseNeuron):
             self.should_exit = True
             self.thread.join(5)
             self.is_running = False
-            bt.logging.debug("Stopped")
-        if hasattr(self, "score_store"):
             self.score_store.close()
+            bt.logging.debug("Stopped")
 
     def build_signed_headers(self) -> dict:
         timestamp = int(datetime.now(tz=timezone.utc).timestamp())
@@ -350,11 +372,30 @@ class BaseValidatorNeuron(BaseNeuron):
                 final_weights += weights
                 continue
 
-            comp_scores = self.score_store.window_scores_by_hotkey(since_ts, comp_value)
+            comp_scores = self.score_store.window_average_scores_by_hotkey(
+                comp_value, since_ts, end_ts
+            )
+            _, global_records_in_window = self.score_store.records_in_window(
+                self.wallet.hotkey.ss58_address, competition.value, since_ts, end_ts
+            )
+            # Set record count limit for setting weights to avoid actors with few high scores (e.g new registrations)
+            record_counts = sorted(
+                [
+                    global_records_in_window.get(hotkey, 0)
+                    for hotkey in self.metagraph.hotkeys
+                ],
+                reverse=True,
+            )
+            record_count_limit = record_counts[
+                int(len(record_counts) * 0.9)
+            ]  # 90th percentile
+            bt.logging.info(
+                f"Competition {comp_value} record count limit for weight setting: {record_count_limit} (Max: {record_counts[0]})"
+            )
+
             comp_scores_by_uid = {
-                self.metagraph.hotkeys.index(hotkey): score
-                for hotkey, score in comp_scores.items()
-                if hotkey in self.metagraph.hotkeys
+                self.metagraph.hotkeys.index(hotkey): comp_scores.get(hotkey, 0.0)
+                for hotkey in self.metagraph.hotkeys
             }
             bt.logging.info(
                 f"Competition {comp_value} scores: \n {json.dumps(comp_scores_by_uid, indent=2)}"

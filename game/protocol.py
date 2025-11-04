@@ -30,6 +30,15 @@ class Ping(bt.Synapse):
     is_available: bool = False
 
 
+class GameChatMessage(BaseModel):
+    team: str
+    sender: str
+    message: str
+    clueText: str | None = None
+    number: int | None = None
+    guesses: list[str] | None = None
+
+
 class GameSynapseOutput(BaseModel):
     clue_text: typing.Optional[str] = None
     number: typing.Optional[int] = None
@@ -59,6 +68,7 @@ class GameSynapse(bt.Synapse):
     your_clue: typing.Optional[str] = None
     your_number: typing.Optional[int] = None
     cards: typing.List[CardType] = None
+    chat_history: typing.List[GameChatMessage] = None
     output: GameSynapseOutput | None = None
 
     def deserialize(self) -> GameSynapseOutput | None:

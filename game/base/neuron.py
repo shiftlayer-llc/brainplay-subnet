@@ -142,7 +142,7 @@ class BaseNeuron(ABC):
         """
         return (
             self.block - self.last_metagraph_update
-        ) > self.config.neuron.epoch_length
+        ) > self.config.neuron.epoch_length / 10
 
     def should_set_weights(self) -> bool:
         # Don't set weights on initialization.

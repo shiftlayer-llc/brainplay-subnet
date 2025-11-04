@@ -22,12 +22,12 @@ import uuid
 import bittensor as bt
 import aiohttp
 import json
-from game.protocol import GameSynapse, GameSynapseOutput
+from game.protocol import GameChatMessage, GameSynapse, GameSynapseOutput
 from game.utils.opSysPrompt import opSysPrompt
 from game.utils.spySysPrompt import spySysPrompt
 from game.utils.ruleSysPrompt import ruleSysPrompt
 from game.validator.reward import get_rewards
-from game.utils.uids import get_random_uids
+from game.utils.uids import choose_players
 import random
 import typing
 from game.utils.game import Competition, TParticipant
@@ -125,10 +125,13 @@ async def create_room(self, game_state: GameState):
                     return None
                 else:
                     response_text = await response.text()
-                    bt.logging.info(f"Room created successfully")
-                    bt.logging.debug(f"Room creation response: {response_text}")
                     try:
-                        return json.loads(response_text)["data"]["id"]
+                        room_id = json.loads(response_text)["data"]["id"]
+                        bt.logging.info(
+                            f"Room created successfully. Room ID: {room_id}"
+                        )
+                        bt.logging.debug(f"Room creation response: {response_text}")
+                        return room_id
                     except (json.JSONDecodeError, KeyError) as e:
                         bt.logging.error(f"Failed to parse room creation response: {e}")
                         return None
@@ -348,7 +351,10 @@ async def forward(self):
         self.step % 2
     ]
 
-    miner_uids, hotkeys_to_increase = await get_random_uids(
+    # Sync any pending score records to the database
+    await self.score_store.sync_pending()
+
+    miner_uids, observer_hotkeys = await choose_players(
         self, competition=competition, k=2
     )
     # Exception handling when number of miners less than 2
@@ -369,7 +375,7 @@ async def forward(self):
     bs_hotkey = self.metagraph.axons[bs_uid].hotkey
     bo_hotkey = self.metagraph.axons[bo_uid].hotkey
 
-    no_response_counts = {
+    invalid_respond_counts = {
         miner_uids[0]: 0,
         miner_uids[1]: 0,
     }
@@ -400,7 +406,21 @@ async def forward(self):
                 role=Role.OPERATIVE,
             )
         )
-
+    for hotkey in observer_hotkeys:
+        uid = self.metagraph.hotkeys.index(hotkey)
+        participants.append(
+            TParticipant(
+                name=("Miner " + str(uid)),
+                hotkey=hotkey,
+                team=TeamColor.OBSERVER,
+                role=Role.OBSERVER,
+            )
+        )
+    observer_uids = [
+        self.metagraph.hotkeys.index(hotkey) for hotkey in observer_hotkeys
+    ]
+    if observer_uids:
+        bt.logging.info(f"\033[33mObservers: {observer_uids}\033[0m")
     # * Initialize game
     game_step = 0
     started_at = time.time()
@@ -490,6 +510,17 @@ async def forward(self):
             your_clue=your_clue,
             your_number=your_number,
             cards=cards,
+            chat_history=[
+                GameChatMessage(
+                    team=chat.team.value,
+                    sender=chat.sender.value,
+                    message=chat.message,
+                    clueText=chat.clueText,
+                    number=chat.number,
+                    guesses=chat.guesses,
+                )
+                for chat in game_state.chatHistory
+            ],
         )
 
         # 2. Main Game Logic
@@ -527,11 +558,11 @@ async def forward(self):
         # 2.2 Check response
         if response is None:
             should_skip_turn = True
-            no_response_counts[to_uid] += 1
+            invalid_respond_counts[to_uid] += 1
             bt.logging.warning(
-                f"No response from miner {to_uid} ({no_response_counts[to_uid]}/2)"
+                f"No response from miner {to_uid} ({invalid_respond_counts[to_uid]}/2)"
             )
-            if no_response_counts[to_uid] < 2:
+            if invalid_respond_counts[to_uid] < 2:
                 # Switch turn to the other team
                 game_state.chatHistory.append(
                     ChatMessage(
@@ -555,7 +586,7 @@ async def forward(self):
                 game_state.chatHistory.append(
                     ChatMessage(
                         sender=your_role,
-                        message=f"❌ No response received! Game over.",
+                        message=f"💀 No response received! Game over.",
                         team=game_state.currentTeam,
                         reasoning="No response received.",
                     )
@@ -619,21 +650,45 @@ async def forward(self):
 
             if not is_valid_clue:
                 should_skip_turn = True
-                bt.logging.info(
-                    f"❌ Invalid clue '{clue}' provided by miner {to_uid} for board words {board_words}. Reason: {reason}"
-                )
-                bt.logging.info(f"Penalizing team {game_state.currentTeam}.")
-                game_state.chatHistory.append(
-                    ChatMessage(
-                        sender=Role.SPYMASTER,
-                        message=f"Gave invalid clue '{clue}' with number {number}. Reason: {reason}",
-                        team=game_state.currentTeam,
-                        clueText="null" if clue is None else clue,
-                        number=-1 if number is None else number,
-                        reasoning=reasoning,
+                invalid_respond_counts[to_uid] += 1
+                if invalid_respond_counts[to_uid] < 2:
+                    bt.logging.info(
+                        f"❌ Invalid clue '{clue}' provided by miner {to_uid} for board words {board_words}. Reason: {reason}"
                     )
-                )
-                response.clue_text = None
+                    bt.logging.info(f"Skipping turn to the other team.")
+                    game_state.chatHistory.append(
+                        ChatMessage(
+                            sender=Role.SPYMASTER,
+                            message=f"Gave invalid clue '{clue}' with number {number}. Reason: {reason} Skipping turn.",
+                            team=game_state.currentTeam,
+                            clueText="null" if clue is None else clue,
+                            number=-1 if number is None else number,
+                            reasoning=reasoning,
+                        )
+                    )
+                else:
+                    game_state.gameWinner = (
+                        TeamColor.RED
+                        if game_state.currentTeam == TeamColor.BLUE
+                        else TeamColor.BLUE
+                    )
+                    resetAnimations(self, game_state.cards)
+                    end_reason = "no_response"
+                    bt.logging.info(
+                        f"💀 Invalid clue provided! Game over. Winner: {game_state.gameWinner}"
+                    )
+                    game_state.chatHistory.append(
+                        ChatMessage(
+                            sender=your_role,
+                            message=f"💀 Invalid clue provided! ({reason}) Game over.",
+                            team=game_state.currentTeam,
+                            reasoning="Invalid clue provided.",
+                        )
+                    )
+                    # End the game and remove from gameboard after 10 seconds
+                    await update_room(self, game_state, roomId)
+                    break
+
             else:
                 game_state.chatHistory.append(
                     ChatMessage(
@@ -653,9 +708,9 @@ async def forward(self):
             bt.logging.info(f"Guessed cards: {guesses}")
             # bt.logging.info(f"Reasoning: {reasoning}")
             if guesses is None:
-                no_response_counts[to_uid] += 1
+                invalid_respond_counts[to_uid] += 1
                 bt.logging.info(f"⚠️ No guesses '{guesses}' provided by miner {to_uid}.")
-                if no_response_counts[to_uid] < 2:
+                if invalid_respond_counts[to_uid] < 2:
                     # Switch turn to the other team
                     game_state.chatHistory.append(
                         ChatMessage(
@@ -826,20 +881,6 @@ async def forward(self):
     winner_value = (
         game_state.gameWinner.value if game_state.gameWinner is not None else None
     )
-
-    if winner_value:
-        # Increase selection count after the game
-        for hotkey in hotkeys_to_increase:
-            try:
-                uid = self.metagraph.hotkeys.index(hotkey)
-                self.score_store.increment_selection_count(
-                    hotkey, uid, competition.value
-                )
-                bt.logging.info(f"Incremented selection count for {uid}")
-            except Exception as err:  # noqa: BLE001
-                bt.logging.error(
-                    f"Failed to increment selection count for {hotkey}: {err}"
-                )
 
     # Adjust the scores based on responses from miners.
     rewards = get_rewards(

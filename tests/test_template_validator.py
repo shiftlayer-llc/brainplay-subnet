@@ -25,7 +25,7 @@ import torch
 from neurons.validator import Validator
 from game.base.validator import BaseValidatorNeuron
 from game.protocol import Dummy
-from game.utils.uids import get_random_uids
+from game.utils.uids import choose_players
 from game.validator.reward import get_rewards
 
 
@@ -45,7 +45,7 @@ class TemplateValidatorNeuronTestCase(unittest.TestCase):
         config.metagraph._mock = True
         config.subtensor._mock = True
         self.neuron = Validator(config)
-        self.miner_uids = get_random_uids(self, k=10)
+        self.miner_uids = choose_players(self, k=10)
 
     def test_run_single_step(self):
         # TODO: Test a single step

@@ -123,6 +123,17 @@ def add_args(cls, parser):
     )
 
     parser.add_argument(
+        "--wandb.restart_interval",
+        type=int,
+        metavar="HOURS",
+        help=(
+            "Restart interval for the Weights & Biases run, in hours. "
+            "Set to 0 to disable automatic restarts."
+        ),
+        default=24,
+    )
+
+    parser.add_argument(
         "--wandb.offline",
         action="store_true",
         help="Runs wandb in offline mode.",
@@ -194,7 +205,7 @@ def add_validator_args(cls, parser):
         "--clear_db",
         action="store_true",
         help="Remove the validator score database before startup.",
-        default=False,
+        default=True,
     )
 
     parser.add_argument(
