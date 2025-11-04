@@ -100,7 +100,7 @@ async def choose_players(
             self.subtensor.get_timestamp().timestamp() + (360 - blocks_since_epoch) * 12
         )
         since_ts = end_ts - int(window_seconds)
-        window_scores = self.score_store.window_average_scores_by_hotkey(
+        window_scores, _, _ = self.score_store.window_average_scores_by_hotkey(
             competition.value, since_ts, end_ts
         )
         self._local_counts_in_window, self._global_counts_in_window = (

@@ -21,7 +21,6 @@
 import copy
 import os
 import time
-import json
 import numpy as np
 import asyncio
 import argparse
@@ -372,18 +371,14 @@ class BaseValidatorNeuron(BaseNeuron):
                 final_weights += weights
                 continue
 
-            comp_scores = self.score_store.window_average_scores_by_hotkey(
-                comp_value, since_ts, end_ts
-            )
-            _, global_records_in_window = self.score_store.records_in_window(
-                self.wallet.hotkey.ss58_address, competition.value, since_ts, end_ts
+            avg_scores, total_scores, counts = (
+                self.score_store.window_average_scores_by_hotkey(
+                    comp_value, since_ts, end_ts
+                )
             )
             # Set record count limit for setting weights to avoid actors with few high scores (e.g new registrations)
             record_counts = sorted(
-                [
-                    global_records_in_window.get(hotkey, 0)
-                    for hotkey in self.metagraph.hotkeys
-                ],
+                [counts.get(hotkey, 0) for hotkey in self.metagraph.hotkeys],
                 reverse=True,
             )
             record_count_limit = record_counts[
@@ -393,25 +388,22 @@ class BaseValidatorNeuron(BaseNeuron):
                 f"Competition {comp_value} record count limit for weight setting: {record_count_limit} (Max: {record_counts[0]})"
             )
 
-            comp_scores_by_uid = {
-                self.metagraph.hotkeys.index(hotkey): comp_scores.get(hotkey, 0.0)
-                for hotkey in self.metagraph.hotkeys
+            avg_scores_by_uid = {
+                uid: avg_scores.get(hotkey, 0.0)
+                for uid, hotkey in enumerate(self.metagraph.hotkeys)
             }
-            bt.logging.info(
-                f"Competition {comp_value} scores: \n {json.dumps(comp_scores_by_uid, indent=2)}"
-            )
-            comp_scores_after_record_limit = {
+            avg_scores_after_record_limit = {
                 hotkey: score
-                for hotkey, score in comp_scores.items()
-                if global_records_in_window.get(hotkey, 0) >= record_count_limit
+                for hotkey, score in avg_scores.items()
+                if counts.get(hotkey, 0) >= record_count_limit
             }
-            if not comp_scores_after_record_limit:
+            if not avg_scores_after_record_limit:
                 bt.logging.warning(
                     f"No scores for competition {comp_value}; skipping its allocation."
                 )
                 continue
 
-            top_score = max(comp_scores_after_record_limit.values())
+            top_score = max(avg_scores_after_record_limit.values())
             if top_score <= 0:
                 bt.logging.warning(
                     f"Top score for competition {comp_value} is non-positive; skipping."
@@ -422,7 +414,7 @@ class BaseValidatorNeuron(BaseNeuron):
 
             top_hotkeys = [
                 hotkey
-                for hotkey, score in comp_scores_after_record_limit.items()
+                for hotkey, score in avg_scores_after_record_limit.items()
                 if score == top_score
             ]
             winner_uids = []
@@ -451,9 +443,18 @@ class BaseValidatorNeuron(BaseNeuron):
 
             winner_uid = winner_uids[0]
             weights[winner_uid] = 1.0
+            winner_hotkey = self.metagraph.hotkeys[winner_uid]
 
             bt.logging.info(
-                f"Competition {comp_value} winner: Miner {winner_uid} with score {top_score}"
+                f"Competition {comp_value} winner: Miner {winner_uid} Games: {counts.get(winner_hotkey, 0)}, Score: {total_scores.get(winner_hotkey, 0)}, WinRate: {(top_score * 100):.2f}%"
+            )
+
+            self._log_competition_scores(
+                comp_value=comp_value,
+                counts=counts,
+                total_scores=total_scores,
+                avg_scores_by_uid=avg_scores_by_uid,
+                record_count_limit=record_count_limit,
             )
 
             final_weights += weights
@@ -480,6 +481,119 @@ class BaseValidatorNeuron(BaseNeuron):
 
         raw_weights = self.scores / norm
         self._set_weights(raw_weights)
+
+    def _log_competition_scores(
+        self,
+        *,
+        comp_value: str,
+        counts: dict,
+        total_scores: dict,
+        avg_scores_by_uid: dict,
+        record_count_limit: int,
+    ) -> None:
+        """Log competition scores as a table with win-rate based ordering."""
+        table_rows = []
+        for uid, hotkey in enumerate(self.metagraph.hotkeys):
+            games_played = int(counts.get(hotkey, 0))
+            total_wins = float(total_scores.get(hotkey, 0.0))
+            win_rate_value = float(avg_scores_by_uid.get(uid, 0.0))
+            table_rows.append(
+                {
+                    "uid": uid,
+                    "hotkey": hotkey,
+                    "games": games_played,
+                    "wins": total_wins,
+                    "win_rate": win_rate_value,
+                    "below_limit": games_played < record_count_limit,
+                }
+            )
+
+        normal_rows = [row for row in table_rows if not row["below_limit"]]
+        below_limit_rows = [row for row in table_rows if row["below_limit"]]
+
+        normal_rows.sort(key=lambda row: (-row["win_rate"], -row["games"], row["uid"]))
+        below_limit_rows.sort(
+            key=lambda row: (-row["win_rate"], -row["games"], row["uid"])
+        )
+
+        ordered_rows = normal_rows + below_limit_rows
+
+        headers = [
+            "Rank",
+            "UID",
+            "Hotkey",
+            "Games Played",
+            "Score(Wins)",
+            "Win Rate",
+        ]
+        table_data = [headers]
+        for rank, row in enumerate(ordered_rows, start=1):
+            wins_value = row["wins"]
+            wins_str = (
+                str(int(round(wins_value)))
+                if abs(wins_value - round(wins_value)) < 1e-6
+                else f"{wins_value:.2f}"
+            )
+            table_data.append(
+                [
+                    str(rank),
+                    str(row["uid"]),
+                    row["hotkey"],
+                    str(row["games"]),
+                    wins_str,
+                    f"{row['win_rate'] * 100:.2f}%",
+                ]
+            )
+
+        column_widths = [
+            max(len(row[col_index]) for row in table_data)
+            for col_index in range(len(headers))
+        ]
+
+        border_line = "+" + "+".join("-" * (width + 2) for width in column_widths) + "+"
+
+        def _format_row(
+            cells: List[str],
+            *,
+            cell_prefix: str = "",
+            cell_suffix: str = "",
+        ) -> str:
+            return (
+                "| "
+                + " | ".join(
+                    f"{cell_prefix}{cell.ljust(width)}{cell_suffix}"
+                    for cell, width in zip(cells, column_widths)
+                )
+                + " |"
+            )
+
+        header_line = _format_row(table_data[0])
+
+        table_lines = [border_line, header_line, border_line]
+
+        grey_section_started = False
+        for row_index, row_cells in enumerate(table_data[1:], start=0):
+            is_first_row = row_index == 0
+            is_below_limit = ordered_rows[row_index]["below_limit"]
+            if is_below_limit and not grey_section_started:
+                grey_section_started = True
+                table_lines.append(border_line)
+            if is_first_row:
+                formatted_line = _format_row(
+                    row_cells, cell_prefix="\033[92m", cell_suffix="\033[0m"
+                )
+            elif is_below_limit:
+                formatted_line = _format_row(
+                    row_cells, cell_prefix="\033[90m", cell_suffix="\033[0m"
+                )
+            else:
+                formatted_line = _format_row(row_cells)
+            table_lines.append(formatted_line)
+
+        table_lines.append(border_line)
+
+        table_output = "\n".join(table_lines)
+        bt.logging.info(f"{comp_value} scores:\n{table_output}")
 
     def _set_weights(self, weights: np.ndarray) -> None:
         weights = np.asarray(weights, dtype=np.float32)

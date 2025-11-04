@@ -231,22 +231,26 @@ class ScoreStore:
     def window_average_scores_by_hotkey(
         self, competition: Optional[str], since_ts: float, end_ts: float
     ) -> Dict[str, float]:
-        totals: Dict[str, float] = defaultdict(float)
+        avg_scores: Dict[str, float] = defaultdict(float)
+        total_scores: Dict[str, float] = defaultdict(float)
+        counts: Dict[str, float] = defaultdict(float)
         with self._lock:
             cur = self.conn.cursor()
             params = [int(since_ts), int(end_ts), competition]
             query = """
-                SELECT hotkey, SUM(score) * 1.0 / COUNT(*) FROM miner_records
+                SELECT hotkey, SUM(score) * 1.0 / COUNT(*), SUM(score), COUNT(*) FROM miner_records
                 WHERE ts >= ? AND ts < ? AND competition = ?
                 GROUP BY hotkey
             """
             cur.execute(query, tuple(params))
             rows = cur.fetchall()
             for row in rows:
-                hotkey, score = row
-                totals[hotkey] = float(score or 0.0)
+                hotkey, avg_score, total_score, count = row
+                avg_scores[hotkey] = float(avg_score or 0.0)
+                total_scores[hotkey] = float(total_score or 0.0)
+                counts[hotkey] = float(count or 0.0)
             cur.close()
-        return dict(totals)
+        return dict(avg_scores), dict(total_scores), dict(counts)
 
     def records_in_window(
         self, validator: str, competition: str, since_ts: float, end_ts: float
