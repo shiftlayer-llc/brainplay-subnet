@@ -104,6 +104,7 @@ class BaseValidatorNeuron(BaseNeuron):
         bt.logging.info(f"Using backend: {self.backend_base}")
         scores_endpoint = f"{self.backend_base}/api/v1/rooms/score"
         scores_fetch_endpoint = f"{self.backend_base}/api/v1/rooms/sync"
+        self.active_miners_endpoint = f"{self.backend_base}/api/v1/rooms/miner/active"
         self.score_store = ScoreStore(
             scores_db_path,
             backend_url=scores_endpoint,

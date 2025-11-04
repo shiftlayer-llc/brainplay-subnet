@@ -1,5 +1,6 @@
 import random
 import time
+import aiohttp
 import bittensor as bt
 from game.api.get_query_axons import ping_uids
 import numpy as np
@@ -62,6 +63,33 @@ def make_available_pool(self, exclude: List[int] = None) -> List[int]:
     return available_pool
 
 
+async def fetch_active_miners(self, competition: Competition):
+    session = aiohttp.ClientSession()
+    try:
+        headers = self.build_signed_headers()
+        params = {}
+        params["competition"] = competition.value
+        async with session.get(
+            self.active_miners_endpoint, headers=headers, params=params, timeout=15
+        ) as resp:
+            if resp.status != 200:
+                text = await resp.text()
+                bt.logging.error(f"Failed to get active miners: {resp.status} {text}")
+                return []
+            payload = await resp.json(content_type=None)
+            if not isinstance(payload["data"], list):
+                bt.logging.error(
+                    "Unexpected payload when fetching active miners; expected list."
+                )
+                return []
+            return payload["data"]
+    except Exception as err:  # noqa: BLE001
+        bt.logging.error(f"Exception fetching active miners: {err}")
+        return []
+    finally:
+        await session.close()
+
+
 async def choose_players(
     self,
     competition: Competition = Competition.CLUE_COMPETITION,
@@ -119,6 +147,15 @@ async def choose_players(
     except Exception as err:  # noqa: BLE001
         bt.logging.error(f"Failed to fetch window scores: {err}")
         return [], []
+    # fetch active miners(hotkey) who joined games
+    active_miners = await fetch_active_miners(self, competition)
+    active_miners_uids = [
+        int(uid)
+        for uid in self.metagraph.uids
+        if self.metagraph.hotkeys[uid] in active_miners
+    ]
+    bt.logging.info(f"Active miners uids: {active_miners_uids}")
+    exclude_set.update(uid for uid in active_miners_uids)
 
     available_pool = make_available_pool(self, list(exclude_set))
     selected: List[int] = []
