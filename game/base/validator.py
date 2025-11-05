@@ -20,11 +20,13 @@
 
 import copy
 import os
+import sys
 import time
 import numpy as np
 import asyncio
 import argparse
 import threading
+import subprocess
 from datetime import datetime, timezone
 import bittensor as bt
 import wandb
@@ -37,7 +39,6 @@ from game.base.utils.weight_utils import (
     process_weights_for_netuid,
     convert_weights_and_uids_for_emit,
 )  # TODO: Replace when bittensor switches to numpy
-from game.mock import MockDendrite
 from game.utils.config import add_validator_args
 from game.utils.game import Competition
 from game.validator.score_store import ScoreStore
@@ -69,17 +70,64 @@ class BaseValidatorNeuron(BaseNeuron):
         self.hotkeys = copy.deepcopy(self.metagraph.hotkeys)
 
         # Dendrite lets us send messages to other nodes (axons) in the network.
-        if self.config.mock:
-            self.dendrite = MockDendrite(wallet=self.wallet)
-        else:
-            self.dendrite = bt.dendrite(wallet=self.wallet)
+        self.dendrite = bt.dendrite(wallet=self.wallet)
         bt.logging.info(f"Dendrite: {self.dendrite}")
 
         # Set up initial scoring weights for validation
         bt.logging.info("Building validation weights.")
         self.scores = np.zeros(self.metagraph.n, dtype=np.float32)
 
-        scores_db_path = os.path.join(self.config.neuron.full_path, "scores.db")
+        self.wandb_runs = [None, None]
+        # Init sync with the network. Updates the metagraph.
+        self.sync()
+
+        # Serve axon to enable external connections.
+        if not self.config.neuron.axon_off:
+            self.serve_axon()
+        else:
+            bt.logging.warning("axon off, not serving ip to chain.")
+
+        # Create asyncio event loop to manage async tasks.
+        self.loop = asyncio.get_event_loop()
+
+        # Instantiate runners
+        self.should_exit: bool = False
+        self.is_running: bool = False
+        self.thread: Union[threading.Thread, None] = None
+        self.competition_process_1 = None  # Process for clue competition
+        self.competition_process_2 = None  # Process for guess competition
+
+    def serve_axon(self):
+        """Serve axon to enable external connections."""
+
+        bt.logging.info("serving ip to chain...")
+        try:
+            self.axon = bt.axon(wallet=self.wallet, config=self.config)
+
+            try:
+                self.subtensor.serve_axon(
+                    netuid=self.config.netuid,
+                    axon=self.axon,
+                )
+                bt.logging.info(
+                    f"Running validator {self.axon} on network: {self.config.subtensor.chain_endpoint} with netuid: {self.config.netuid}"
+                )
+            except Exception as e:
+                bt.logging.error(f"Failed to serve Axon with exception: {e}")
+                pass
+
+        except Exception as e:
+            bt.logging.error(f"Failed to create Axon initialize with exception: {e}")
+            pass
+
+    async def concurrent_forward(self):
+        coroutines = [
+            self.forward() for _ in range(self.config.neuron.num_concurrent_forwards)
+        ]
+        await asyncio.gather(*coroutines)
+
+    def init_db(self):
+        scores_db_path = os.path.join("/tmp", f"{self.current_competition.value}.db")
         if getattr(self.config, "clear_db", False):
             if os.path.exists(scores_db_path):
                 try:
@@ -111,96 +159,13 @@ class BaseValidatorNeuron(BaseNeuron):
             fetch_url=scores_fetch_endpoint,
             signer=self.build_signed_headers,
         )
-        self.score_store.init(self.metagraph.hotkeys)
+        self.score_store.init()
         scoring_interval_text = SCORING_INTERVAL
         if hasattr(self.config, "scoring") and getattr(
             self.config.scoring, "interval", None
         ):
             scoring_interval_text = self.config.scoring.interval
         self.scoring_window_seconds = parse_interval_to_seconds(scoring_interval_text)
-
-        # Init wandb
-        if self.config.wandb.off is False:
-            bt.logging.info("Wandb logging is turned on.")
-            bt.logging.info(
-                f"Initializing wandb with project name: {self.config.wandb.project_name}, entity: {self.config.wandb.entity}"
-            )
-            self.wandb_run = None
-
-            def _start_wandb_run():
-                if self.wandb_run:
-                    try:
-                        self.wandb_run.finish()
-                    except Exception as err:
-                        bt.logging.warning(
-                            f"Failed to finish existing Wandb run: {err}"
-                        )
-                self.wandb_run = wandb.init(
-                    project=self.config.wandb.project_name,
-                    entity=self.config.wandb.entity,
-                    name=f"validator-{self.wallet.hotkey.ss58_address[:6]}",
-                )
-                if self.config.wandb.restart_interval > 0:
-                    self._wandb_restart_timer = threading.Timer(
-                        self.config.wandb.restart_interval * 3600, _start_wandb_run
-                    )
-                    self._wandb_restart_timer.daemon = True
-                    self._wandb_restart_timer.start()
-                    bt.logging.info(
-                        f"Wandb auto-restart timer scheduled in {self.config.wandb.restart_interval} hours."
-                    )
-
-            _start_wandb_run()
-        else:
-            bt.logging.info("Wandb logging is turned off.")
-            self.wandb_run = None
-
-        # Init sync with the network. Updates the metagraph.
-        self.sync()
-
-        # Serve axon to enable external connections.
-        if not self.config.neuron.axon_off:
-            self.serve_axon()
-        else:
-            bt.logging.warning("axon off, not serving ip to chain.")
-
-        # Create asyncio event loop to manage async tasks.
-        self.loop = asyncio.get_event_loop()
-
-        # Instantiate runners
-        self.should_exit: bool = False
-        self.is_running: bool = False
-        self.thread: Union[threading.Thread, None] = None
-        self.lock = asyncio.Lock()
-
-    def serve_axon(self):
-        """Serve axon to enable external connections."""
-
-        bt.logging.info("serving ip to chain...")
-        try:
-            self.axon = bt.axon(wallet=self.wallet, config=self.config)
-
-            try:
-                self.subtensor.serve_axon(
-                    netuid=self.config.netuid,
-                    axon=self.axon,
-                )
-                bt.logging.info(
-                    f"Running validator {self.axon} on network: {self.config.subtensor.chain_endpoint} with netuid: {self.config.netuid}"
-                )
-            except Exception as e:
-                bt.logging.error(f"Failed to serve Axon with exception: {e}")
-                pass
-
-        except Exception as e:
-            bt.logging.error(f"Failed to create Axon initialize with exception: {e}")
-            pass
-
-    async def concurrent_forward(self):
-        coroutines = [
-            self.forward() for _ in range(self.config.neuron.num_concurrent_forwards)
-        ]
-        await asyncio.gather(*coroutines)
 
     def run(self):
         """
@@ -221,6 +186,47 @@ class BaseValidatorNeuron(BaseNeuron):
             KeyboardInterrupt: If the miner is stopped by a manual interruption.
             Exception: For unforeseen errors during the miner's operation, which are logged for diagnosis.
         """
+        competition = Competition(self.config.competition)
+        self.current_competition = competition
+
+        self.init_db()
+
+        # Init wandb
+        if self.config.wandb.off is False:
+            bt.logging.info("Wandb logging is turned on.")
+            bt.logging.info(
+                f"Initializing wandb with project name: {self.config.wandb.project_name}, entity: {self.config.wandb.entity}"
+            )
+
+            def _start_wandb_run():
+                if self.wandb_runs[competition.mechid]:
+                    try:
+                        self.wandb_runs[competition.mechid].finish()
+                    except Exception as err:
+                        bt.logging.warning(
+                            f"Failed to finish existing Wandb run: {err}"
+                        )
+                self.wandb_runs[competition.mechid] = wandb.init(
+                    project=self.config.wandb.project_name,
+                    entity=self.config.wandb.entity,
+                    name=f"{competition.value}-{self.wallet.hotkey.ss58_address[:6]}",
+                )
+                if self.config.wandb.restart_interval > 0:
+                    _wandb_restart_timer = threading.Timer(
+                        self.config.wandb.restart_interval * 3600, _start_wandb_run
+                    )
+                    _wandb_restart_timer.daemon = True
+                    _wandb_restart_timer.start()
+                    bt.logging.info(
+                        f"Wandb auto-restart timer scheduled in {self.config.wandb.restart_interval} hours."
+                    )
+
+            _start_wandb_run()
+        else:
+            bt.logging.info("Wandb logging is turned off.")
+            self.wandb_runs[competition.mechid] = None
+
+        bt.logging.info(f"Starting {competition.value} validator main loop.")
 
         # Check that validator is registered on the network.
         self.sync()
@@ -258,10 +264,9 @@ class BaseValidatorNeuron(BaseNeuron):
             except KeyboardInterrupt:
                 self.axon.stop()
                 bt.logging.success("Validator killed by keyboard interrupt.")
-                if self.wandb_run:
-                    self.wandb_run.finish()
-                if self._wandb_restart_timer:
-                    self._wandb_restart_timer.cancel()
+                for wandb_run in self.wandb_runs.values():
+                    if wandb_run:
+                        wandb_run.finish()
                 exit()
 
             # In case of unforeseen errors, the validator will log the error and continue operations.
@@ -281,8 +286,41 @@ class BaseValidatorNeuron(BaseNeuron):
         if not self.is_running:
             bt.logging.debug("Starting validator in background thread.")
             self.should_exit = False
-            self.thread = threading.Thread(target=self.run, daemon=True)
-            self.thread.start()
+            if self.config.competition == "main":
+
+                def stream_output(prefix, process):
+                    for line in process.stdout:
+                        print(f"[{prefix}] {line}", end="")
+
+                python_exe = sys.executable
+                args = sys.argv.copy()
+                args += ["--competition"]
+                self.competition_process_1 = subprocess.Popen(
+                    [python_exe, "-u", *args, Competition.CLUE_COMPETITION.value],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+                time.sleep(60)  # stagger start times to avoid overload
+                self.competition_process_2 = subprocess.Popen(
+                    [python_exe, "-u", *args, Competition.GUESS_COMPETITION.value],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+                threading.Thread(
+                    target=stream_output,
+                    args=("CLUE", self.competition_process_1),
+                    daemon=True,
+                ).start()
+                threading.Thread(
+                    target=stream_output,
+                    args=("GUESS", self.competition_process_2),
+                    daemon=True,
+                ).start()
+            else:
+                self.thread = threading.Thread(target=self.run, daemon=True)
+                self.thread.start()
             self.is_running = True
             bt.logging.debug("Started")
 
@@ -291,12 +329,15 @@ class BaseValidatorNeuron(BaseNeuron):
         Stops the validator's operations that are running in the background thread.
         """
         if self.is_running:
-            bt.logging.debug("Stopping validator in background thread.")
-            self.should_exit = True
-            self.thread.join(5)
-            self.is_running = False
-            self.score_store.close()
-            bt.logging.debug("Stopped")
+            if self.config.competition == "main":
+                pass
+            else:
+                bt.logging.debug("Stopping validator in background thread.")
+                self.should_exit = True
+                self.thread.join(5)
+                self.is_running = False
+                self.score_store.close()
+                bt.logging.debug("Stopped")
 
     def build_signed_headers(self) -> dict:
         timestamp = int(datetime.now(tz=timezone.utc).timestamp())
@@ -328,7 +369,17 @@ class BaseValidatorNeuron(BaseNeuron):
         if self.is_running:
             bt.logging.debug("Stopping validator in background thread.")
             self.should_exit = True
-            self.thread.join(5)
+            if self.config.competition == "main":
+                bt.logging.debug("Stopping competition subprocesses.")
+                if self.competition_process_1:
+                    self.competition_process_1.terminate()
+                    self.competition_process_1.wait(timeout=5)
+                if self.competition_process_2:
+                    self.competition_process_2.terminate()
+                    self.competition_process_2.wait(timeout=5)
+                bt.logging.debug("Stopped competition subprocesses.")
+            if self.thread:
+                self.thread.join(5)
             self.is_running = False
             bt.logging.debug("Stopped")
 
@@ -357,105 +408,106 @@ class BaseValidatorNeuron(BaseNeuron):
             self._burn_weights()
             return
 
-        for competition in Competition:
-            weights = np.zeros(self.metagraph.n, dtype=np.float32)
-            comp_value = competition.value
+        competition = self.current_competition
+        weights = np.zeros(self.metagraph.n, dtype=np.float32)
+        comp_value = competition.value
 
-            comp_games = self.score_store.games_in_window(since_ts, end_ts, comp_value)
-            if comp_games < 300:
+        comp_games = self.score_store.games_in_window(since_ts, end_ts, comp_value)
+        if comp_games < 300:
+            bt.logging.warning(
+                f"Not enough games for competition {comp_value}; skipping its allocation. ({comp_games} < 300)"
+            )
+            self._burn_weights(competition.mechid)
+            return
+
+        avg_scores, total_scores, counts = (
+            self.score_store.window_average_scores_by_hotkey(
+                comp_value, since_ts, end_ts
+            )
+        )
+        # Set record count limit for setting weights to avoid actors with few high scores (e.g new registrations)
+        median_count = np.median(
+            [counts.get(hotkey, 0) for hotkey in self.metagraph.hotkeys]
+        )
+        record_count_limit = median_count - 3
+        bt.logging.info(
+            f"Competition {comp_value} record count limit for weight setting: {record_count_limit} (Max: {max(counts.values())}, Median: {median_count})"
+        )
+
+        avg_scores_by_uid = {
+            uid: avg_scores.get(hotkey, 0.0)
+            for uid, hotkey in enumerate(self.metagraph.hotkeys)
+        }
+        avg_scores_after_record_limit = {
+            hotkey: score
+            for hotkey, score in avg_scores.items()
+            if counts.get(hotkey, 0) >= record_count_limit
+        }
+        if not avg_scores_after_record_limit:
+            bt.logging.warning(
+                f"No scores for competition {comp_value}; skipping its allocation."
+            )
+            return
+
+        top_score = max(avg_scores_after_record_limit.values())
+        if top_score <= 0:
+            bt.logging.warning(
+                f"Top score for competition {comp_value} is non-positive; skipping."
+            )
+            self._burn_weights(competition.mechid)
+            return
+
+        top_hotkeys = [
+            hotkey
+            for hotkey, score in avg_scores_after_record_limit.items()
+            if score == top_score
+        ]
+        winner_uids = []
+        for hotkey in top_hotkeys:
+            try:
+                winner_uids.append(self.metagraph.hotkeys.index(hotkey))
+            except ValueError:
                 bt.logging.warning(
-                    f"Not enough games for competition {comp_value}; skipping its allocation. ({comp_games} < 300)"
+                    f"Top hotkey {hotkey} for competition {comp_value} not in metagraph."
                 )
-                self._burn_weights(competition.mechid)
-                continue
+        if not winner_uids:
+            bt.logging.warning(
+                f"No top hotkeys for competition {comp_value} present in metagraph; skipping."
+            )
+            self._burn_weights(competition.mechid)
+            return
 
-            avg_scores, total_scores, counts = (
-                self.score_store.window_average_scores_by_hotkey(
-                    comp_value, since_ts, end_ts
-                )
-            )
-            # Set record count limit for setting weights to avoid actors with few high scores (e.g new registrations)
-            median_count = np.median(
-                [counts.get(hotkey, 0) for hotkey in self.metagraph.hotkeys]
-            )
-            record_count_limit = median_count - 3
+        if len(winner_uids) > 1:
             bt.logging.info(
-                f"Competition {comp_value} record count limit for weight setting: {record_count_limit} (Max: {max(counts.values())}, Median: {median_count})"
+                f"Competition {comp_value} has multiple winners: {winner_uids} with score {top_score}; skipping"
             )
+            self._burn_weights(competition.mechid)
+            return
 
-            avg_scores_by_uid = {
-                uid: avg_scores.get(hotkey, 0.0)
-                for uid, hotkey in enumerate(self.metagraph.hotkeys)
-            }
-            avg_scores_after_record_limit = {
-                hotkey: score
-                for hotkey, score in avg_scores.items()
-                if counts.get(hotkey, 0) >= record_count_limit
-            }
-            if not avg_scores_after_record_limit:
-                bt.logging.warning(
-                    f"No scores for competition {comp_value}; skipping its allocation."
-                )
-                continue
+        winner_uid = winner_uids[0]
+        weights[winner_uid] = 1.0
+        winner_hotkey = self.metagraph.hotkeys[winner_uid]
 
-            top_score = max(avg_scores_after_record_limit.values())
-            if top_score <= 0:
-                bt.logging.warning(
-                    f"Top score for competition {comp_value} is non-positive; skipping."
-                )
-                self._burn_weights(competition.mechid)
-                continue
+        bt.logging.info(
+            f"Competition {comp_value} winner: Miner {winner_uid} Games: {counts.get(winner_hotkey, 0)}, Score: {total_scores.get(winner_hotkey, 0)}, WinRate: {(top_score * 100):.2f}%"
+        )
 
-            top_hotkeys = [
-                hotkey
-                for hotkey, score in avg_scores_after_record_limit.items()
-                if score == top_score
-            ]
-            winner_uids = []
-            for hotkey in top_hotkeys:
-                try:
-                    winner_uids.append(self.metagraph.hotkeys.index(hotkey))
-                except ValueError:
-                    bt.logging.warning(
-                        f"Top hotkey {hotkey} for competition {comp_value} not in metagraph."
-                    )
-            if not winner_uids:
-                bt.logging.warning(
-                    f"No top hotkeys for competition {comp_value} present in metagraph; skipping."
-                )
-                self._burn_weights(competition.mechid)
-                continue
+        self._log_competition_scores(
+            comp_value=comp_value,
+            counts=counts,
+            total_scores=total_scores,
+            avg_scores_by_uid=avg_scores_by_uid,
+            record_count_limit=record_count_limit,
+        )
 
-            if len(winner_uids) > 1:
-                bt.logging.info(
-                    f"Competition {comp_value} has multiple winners: {winner_uids} with score {top_score}; skipping"
-                )
-                self._burn_weights(competition.mechid)
-                continue
+        norm = np.linalg.norm(weights, ord=1, axis=0, keepdims=True)
+        if np.any(norm == 0) or np.isnan(norm).any():
+            norm = np.ones_like(norm)
+        raw_weights = weights / norm
 
-            winner_uid = winner_uids[0]
-            weights[winner_uid] = 1.0
-            winner_hotkey = self.metagraph.hotkeys[winner_uid]
+        self._set_weights(competition.mechid, raw_weights)
+        time.sleep(12)  # Sleep to avoid nonce issues
 
-            bt.logging.info(
-                f"Competition {comp_value} winner: Miner {winner_uid} Games: {counts.get(winner_hotkey, 0)}, Score: {total_scores.get(winner_hotkey, 0)}, WinRate: {(top_score * 100):.2f}%"
-            )
-
-            self._log_competition_scores(
-                comp_value=comp_value,
-                counts=counts,
-                total_scores=total_scores,
-                avg_scores_by_uid=avg_scores_by_uid,
-                record_count_limit=record_count_limit,
-            )
-
-            norm = np.linalg.norm(weights, ord=1, axis=0, keepdims=True)
-            if np.any(norm == 0) or np.isnan(norm).any():
-                norm = np.ones_like(norm)
-            raw_weights = weights / norm
-
-            self._set_weights(competition.mechid, raw_weights)
-            time.sleep(24)  # Sleep to avoid nonce issues
         self.resync_metagraph()
 
     def _log_competition_scores(
@@ -657,19 +709,19 @@ class BaseValidatorNeuron(BaseNeuron):
         bt.logging.info("Saving validator state.")
 
         # Save the state of the validator to file.
-        np.savez(
-            self.config.neuron.full_path + "/state.npz",
-            step=self.step,
-            scores=self.scores,
-            hotkeys=self.hotkeys,
-        )
+        # np.savez(
+        #     self.config.neuron.full_path + "/state.npz",
+        #     step=self.step,
+        #     scores=self.scores,
+        #     hotkeys=self.hotkeys,
+        # )
 
     def load_state(self):
         """Loads the state of the validator from a file."""
         bt.logging.info("Loading validator state.")
 
         # Load the state of the validator from file.
-        state = np.load(self.config.neuron.full_path + "/state.npz")
-        self.step = state["step"]
-        self.scores = state["scores"]
-        self.hotkeys = state["hotkeys"]
+        # state = np.load(self.config.neuron.full_path + "/state.npz")
+        # self.step = state["step"]
+        # self.scores = state["scores"]
+        # self.hotkeys = state["hotkeys"]

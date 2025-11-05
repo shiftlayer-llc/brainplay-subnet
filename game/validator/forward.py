@@ -355,9 +355,7 @@ async def forward(self):
         self (bittensor.neuron.Neuron): The neuron instance containing all necessary state information for the validator.
 
     """
-    competition = [Competition.CLUE_COMPETITION, Competition.GUESS_COMPETITION][
-        self.step % 2
-    ]
+    competition = self.current_competition
 
     # Sync any pending score records to the database
     await self.score_store.sync_scores_all()

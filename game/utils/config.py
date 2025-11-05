@@ -95,13 +95,6 @@ def add_args(cls, parser):
     )
 
     parser.add_argument(
-        "--mock",
-        action="store_true",
-        help="Mock neuron and all network components.",
-        default=False,
-    )
-
-    parser.add_argument(
         "--neuron.events_retention_size",
         type=str,
         help="Events retention size.",
@@ -286,6 +279,13 @@ def add_validator_args(cls, parser):
         type=str,
         help="The name of the project where you are sending the new run.",
         default="shiftlayer-ai",
+    )
+
+    parser.add_argument(
+        "--competition",
+        type=str,
+        help="The competition type for this validator (e.g. 'clue_competition'). Leave empty for main validation.",
+        default="main",
     )
 
 
