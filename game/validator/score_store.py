@@ -32,6 +32,7 @@ class ScoreStore:
             os.makedirs(folder, exist_ok=True)
         self._conn: Optional[sqlite3.Connection] = None
         self._lock = threading.RLock()
+        bt.logging.info(f"ScoreStore using database at: {db_path}")
 
     @property
     def conn(self) -> sqlite3.Connection:
@@ -47,7 +48,7 @@ class ScoreStore:
                     self._conn.execute("PRAGMA synchronous=NORMAL;")
         return self._conn
 
-    def init(self, hotkeys):
+    def init(self):
         cur = self.conn.cursor()
         cur.execute(
             """
