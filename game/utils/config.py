@@ -130,7 +130,7 @@ def add_args(cls, parser):
             "Restart interval for the Weights & Biases run, in hours. "
             "Set to 0 to disable automatic restarts."
         ),
-        default=24,
+        default=12,
     )
 
     parser.add_argument(
