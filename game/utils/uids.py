@@ -63,6 +63,57 @@ def make_available_pool(self, exclude: List[int] = None) -> List[int]:
     return available_pool
 
 
+def make_available_pool_for_second_player(self, exclude: List[int] = None) -> List[int]:
+    """Build the candidate uid pool, removing excluded miners"""
+    available_pool = [int(uid) for uid in self.metagraph.uids]
+    # Step 1: Exclude uids in the exclude list
+    available_pool = [uid for uid in available_pool if uid not in (exclude or [])]
+    # Step 2: Exclude uids game count in current epoch is non-zero
+    available_pool = [
+        uid
+        for uid in available_pool
+        if self._global_counts_in_epoch.get(self.metagraph.hotkeys[uid], 0) == 0
+    ]
+    bt.logging.debug(
+        f"Available pool after exclusions: {available_pool}, counts: {[self._global_counts_in_epoch.get(self.metagraph.hotkeys[uid], 0) for uid in available_pool]}"
+    )
+    if not available_pool:
+        return []
+    # Step 3: Choose uids which have minimum local game count in current window
+    minimum_local_count = min(
+        [
+            self._local_counts_in_window.get(self.metagraph.hotkeys[uid], 0)
+            for uid in available_pool
+        ]
+    )
+    available_pool = [
+        uid
+        for uid in available_pool
+        if self._local_counts_in_window.get(self.metagraph.hotkeys[uid], 0)
+        == minimum_local_count
+    ]
+    bt.logging.debug(
+        f"Available pool after local count filter: {available_pool}, counts: {[self._local_counts_in_window.get(self.metagraph.hotkeys[uid], 0) for uid in available_pool]}"
+    )
+
+    # Step 4: Filter out uids which played too many games in current window
+    median_count = np.median(
+        [
+            self._global_counts_in_window.get(self.metagraph.hotkeys[uid], 0)
+            for uid in available_pool
+        ]
+    )
+    available_pool = [
+        uid
+        for uid in available_pool
+        if self._global_counts_in_window.get(self.metagraph.hotkeys[uid], 0)
+        < median_count + 3
+    ]
+    random.shuffle(available_pool)
+
+    return available_pool
+
+
 async def fetch_active_miners(self, competition: Competition):
     session = aiohttp.ClientSession()
     try:
@@ -198,10 +249,11 @@ async def choose_players(
         bt.logging.error("No available miners could be selected.")
         return [], []
 
-    # Step 2: Select remaining players:
+    first_hotkey = self.metagraph.hotkeys[selected[0]]
+    # Step 2: Select second player (who has closest score to first player):
+    available_pool = make_available_pool_for_second_player(self, list(exclude_set))
     while len(selected) < k and available_pool:
         # Sort available pool by score distance to first selected player
-        first_hotkey = self.metagraph.hotkeys[selected[0]]
         available_pool.sort(
             key=lambda uid: abs(
                 float(window_scores.get(self.metagraph.hotkeys[uid], 0.0))
@@ -226,8 +278,6 @@ async def choose_players(
             selected.append(uid)
             observer_hotkeys.pop()
             break
-
-        available_pool = make_available_pool(self, list(exclude_set))
 
     if len(selected) < k:
         bt.logging.warning(
