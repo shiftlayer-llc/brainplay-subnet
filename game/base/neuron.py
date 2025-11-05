@@ -26,7 +26,7 @@ from abc import ABC, abstractmethod
 from game.utils.config import check_config, add_args, config
 from game.utils.misc import ttl_get_block
 from game import __spec_version__ as spec_version
-from game.mock import MockSubtensor, MockMetagraph
+import multiprocessing
 
 
 class BaseNeuron(ABC):
@@ -78,14 +78,9 @@ class BaseNeuron(ABC):
         bt.logging.info("Setting up bittensor objects.")
 
         # The wallet holds the cryptographic key pairs for the miner.
-        if self.config.mock:
-            self.wallet = bt.MockWallet(config=self.config)
-            self.subtensor = MockSubtensor(self.config.netuid, wallet=self.wallet)
-            self.metagraph = MockMetagraph(self.config.netuid, subtensor=self.subtensor)
-        else:
-            self.wallet = bt.wallet(config=self.config)
-            self.subtensor = bt.subtensor(config=self.config)
-            self.metagraph = self.subtensor.metagraph(self.config.netuid)
+        self.wallet = bt.wallet(config=self.config)
+        self.subtensor = bt.subtensor(config=self.config)
+        self.metagraph = self.subtensor.metagraph(self.config.netuid)
         self.last_metagraph_update = self.block
         bt.logging.info(f"Wallet: {self.wallet}")
         bt.logging.info(f"Subtensor: {self.subtensor}")
