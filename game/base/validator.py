@@ -375,15 +375,12 @@ class BaseValidatorNeuron(BaseNeuron):
                 )
             )
             # Set record count limit for setting weights to avoid actors with few high scores (e.g new registrations)
-            record_counts = sorted(
-                [counts.get(hotkey, 0) for hotkey in self.metagraph.hotkeys],
-                reverse=True,
+            median_count = np.median(
+                [counts.get(hotkey, 0) for hotkey in self.metagraph.hotkeys]
             )
-            record_count_limit = record_counts[
-                int(len(record_counts) * 0.5)
-            ]  # 50th percentile
+            record_count_limit = median_count - 3
             bt.logging.info(
-                f"Competition {comp_value} record count limit for weight setting: {record_count_limit} (Max: {record_counts[0]})"
+                f"Competition {comp_value} record count limit for weight setting: {record_count_limit} (Max: {max(counts.values())}, Median: {median_count})"
             )
 
             avg_scores_by_uid = {
@@ -458,6 +455,8 @@ class BaseValidatorNeuron(BaseNeuron):
             raw_weights = weights / norm
 
             self._set_weights(competition.mechid, raw_weights)
+            time.sleep(24)  # Sleep to avoid nonce issues
+        self.resync_metagraph()
 
     def _log_competition_scores(
         self,
