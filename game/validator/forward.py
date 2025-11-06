@@ -445,7 +445,7 @@ async def forward(self):
     bt.logging.info("╔══════════════════════════════════════════════════════════════╗")
     bt.logging.info("║                     🚀  GAME STARTING  🚀                    ║")
     bt.logging.info(
-        f"║                Competition: {competition.value}                ║"
+        f"║                Competition: {competition.value}                 ║"
     )
     bt.logging.info(
         "╚══════════════════════════════════════════════════════════════╝\n"
@@ -628,8 +628,8 @@ async def forward(self):
                         reasoning={"effort": "medium"},
                     )
                     result_json = json.loads(result.output_text)
-                    bt.logging.info(f"Clue check: {result_json}")
                     if result_json.get("valid") is False:
+                        bt.logging.info(f"Clue check: {result_json}")
                         return False, result_json.get("reasoning", "Invalid clue")
                 except Exception as e:  # noqa: BLE001
                     bt.logging.warning(f"Rule validation error: {e}")

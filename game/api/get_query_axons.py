@@ -61,7 +61,6 @@ async def ping_uids(dendrite: bt.dendrite, metagraph, uids, timeout=30):
         successful_uids = []
 
     bt.logging.info(f"ping() successful uids: {[int(uid) for uid in successful_uids]}")
-    bt.logging.info(f"ping() failed uids: {[int(uid) for uid in failed_uids]}")
 
     return successful_uids, failed_uids
 
