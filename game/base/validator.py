@@ -447,6 +447,11 @@ class BaseValidatorNeuron(BaseNeuron):
             for hotkey, count in counts.items()
             if hotkey in hotkeys_with_minimum_stake
         }
+        total_scores = {
+            hotkey: score
+            for hotkey, score in total_scores.items()
+            if hotkey in hotkeys_with_minimum_stake
+        }
         # Set record count limit for setting weights to avoid actors with few high scores (e.g new registrations)
         median_count = np.median(
             [
