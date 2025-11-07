@@ -908,7 +908,7 @@ async def forward(self):
         return float(rewards_list[index]) if index < len(rewards_list) else 0.0
 
     try:
-        self.score_store.record_game(
+        await self.score_store.upload_score(
             room_id=roomId,
             competition=competition.value,
             rs=rs_hotkey,
@@ -924,7 +924,6 @@ async def forward(self):
             score_bo=_score_at(3),
             reason=end_reason,
         )
-        synced = await self.score_store.sync_pending()
     except Exception as err:  # noqa: BLE001
         bt.logging.error(f"Failed to persist game score {roomId}: {err}")
 
