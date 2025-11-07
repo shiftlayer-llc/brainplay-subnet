@@ -883,11 +883,6 @@ async def forward(self):
     bt.logging.info(
         "════════════════════════════════════════════════════════════════\n"
     )
-    ended_at = time.time()
-    winner_value = (
-        game_state.gameWinner.value if game_state.gameWinner is not None else None
-    )
-
     # Adjust the scores based on responses from miners.
     rewards = get_rewards(
         self,
@@ -915,9 +910,6 @@ async def forward(self):
             ro=ro_hotkey,
             bs=bs_hotkey,
             bo=bo_hotkey,
-            winner=winner_value,
-            started_at=started_at,
-            ended_at=ended_at,
             score_rs=_score_at(0),
             score_ro=_score_at(1),
             score_bs=_score_at(2),

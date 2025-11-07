@@ -339,7 +339,20 @@ class ScoreStore:
             )
             cur.close()
 
-    async def upload_score(self, data) -> bool:
+    async def upload_score(
+        self,
+        room_id: str,
+        competition: str,
+        rs: str,
+        ro: str,
+        bs: str,
+        bo: str,
+        score_rs: int,
+        score_ro: int,
+        score_bs: int,
+        score_bo: int,
+        reason: str,
+    ) -> bool:
 
         if not self.backend_url:
             bt.logging.warning("No backend URL configured for score syncing.")
@@ -349,44 +362,44 @@ class ScoreStore:
             payload = {
                 "red": {
                     "spymaster": {
-                        "hotkey": data["rs"],
-                        "score": data["score_rs"],
+                        "hotkey": rs,
+                        "score": score_rs,
                     },
                     "operative": {
-                        "hotkey": data["ro"],
-                        "score": data["score_ro"],
+                        "hotkey": ro,
+                        "score": score_ro,
                     },
                 },
                 "blue": {
                     "spymaster": {
-                        "hotkey": data["bs"],
-                        "score": data["score_bs"],
+                        "hotkey": bs,
+                        "score": score_bs,
                     },
                     "operative": {
-                        "hotkey": data["bo"],
-                        "score": data["score_bo"],
+                        "hotkey": bo,
+                        "score": score_bo,
                     },
                 },
-                "reason": data["reason"],
-                "competition": data["competition"],
+                "reason": reason,
+                "competition": competition,
             }
             headers = self.signer() if self.signer else {}
             try:
                 async with session.patch(
-                    self.backend_url + "/" + data["room_id"],
+                    self.backend_url + "/" + room_id,
                     json=payload,
                     headers=headers,
                     timeout=10,
                 ) as resp:
                     if resp.status in (200, 201, 202, 204):
-                        self.mark_synced(data["room_id"])
+                        self.mark_synced(room_id)
                     else:
                         text = await resp.text()
                         bt.logging.error(
-                            f"Failed to sync score {data['room_id']}: {resp.status} {text}"
+                            f"Failed to sync score {room_id}: {resp.status} {text}"
                         )
             except Exception as err:  # noqa: BLE001
-                bt.logging.error(f"Exception syncing score {data['room_id']}: {err}")
+                bt.logging.error(f"Exception syncing score {room_id}: {err}")
             await self.sync_scores_all(session=session)
         return True
 
