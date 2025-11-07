@@ -424,9 +424,28 @@ class BaseValidatorNeuron(BaseNeuron):
                 comp_value, since_ts, end_ts
             )
         )
+        hotkeys_with_minimum_stake = [
+            self.metagraph.hotkeys[uid]
+            for uid in range(self.metagraph.n)
+            if self.metagraph.S[uid] >= self.config.neuron.minimum_stake_requirement
+        ]
+        avg_scores = {
+            hotkey: score
+            for hotkey, score in avg_scores.items()
+            if hotkey in hotkeys_with_minimum_stake
+        }
+        counts = {
+            hotkey: count
+            for hotkey, count in counts.items()
+            if hotkey in hotkeys_with_minimum_stake
+        }
         # Set record count limit for setting weights to avoid actors with few high scores (e.g new registrations)
         median_count = np.median(
-            [counts.get(hotkey, 0) for hotkey in self.metagraph.hotkeys]
+            [
+                counts.get(self.metagraph.hotkeys[uid], 0)
+                for uid in range(self.metagraph.n)
+                if self.metagraph.S[uid] >= self.config.neuron.minimum_stake_requirement
+            ]
         )
         record_count_limit = median_count - 3
         bt.logging.info(
@@ -436,7 +455,6 @@ class BaseValidatorNeuron(BaseNeuron):
         avg_scores_by_uid = {
             uid: avg_scores.get(hotkey, 0.0)
             for uid, hotkey in enumerate(self.metagraph.hotkeys)
-            if self.metagraph.S[uid] >= self.config.neuron.minimum_stake_requirement
         }
         avg_scores_after_record_limit = {
             hotkey: score
