@@ -436,6 +436,7 @@ class BaseValidatorNeuron(BaseNeuron):
         avg_scores_by_uid = {
             uid: avg_scores.get(hotkey, 0.0)
             for uid, hotkey in enumerate(self.metagraph.hotkeys)
+            if self.metagraph.S[uid] >= self.config.neuron.minimum_stake_requirement
         }
         avg_scores_after_record_limit = {
             hotkey: score
