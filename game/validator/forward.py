@@ -883,11 +883,6 @@ async def forward(self):
     bt.logging.info(
         "════════════════════════════════════════════════════════════════\n"
     )
-    ended_at = time.time()
-    winner_value = (
-        game_state.gameWinner.value if game_state.gameWinner is not None else None
-    )
-
     # Adjust the scores based on responses from miners.
     rewards = get_rewards(
         self,
@@ -908,23 +903,19 @@ async def forward(self):
         return float(rewards_list[index]) if index < len(rewards_list) else 0.0
 
     try:
-        self.score_store.record_game(
+        await self.score_store.upload_score(
             room_id=roomId,
             competition=competition.value,
             rs=rs_hotkey,
             ro=ro_hotkey,
             bs=bs_hotkey,
             bo=bo_hotkey,
-            winner=winner_value,
-            started_at=started_at,
-            ended_at=ended_at,
             score_rs=_score_at(0),
             score_ro=_score_at(1),
             score_bs=_score_at(2),
             score_bo=_score_at(3),
             reason=end_reason,
         )
-        synced = await self.score_store.sync_pending()
     except Exception as err:  # noqa: BLE001
         bt.logging.error(f"Failed to persist game score {roomId}: {err}")
 

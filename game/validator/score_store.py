@@ -339,65 +339,69 @@ class ScoreStore:
             )
             cur.close()
 
-    async def sync_pending(self) -> int:
-        """Pushes unsynced rows to the backend API.
-
-        Returns the number of rows marked as synced.
-        """
+    async def upload_score(
+        self,
+        room_id: str,
+        competition: str,
+        rs: str,
+        ro: str,
+        bs: str,
+        bo: str,
+        score_rs: int,
+        score_ro: int,
+        score_bs: int,
+        score_bo: int,
+        reason: str,
+    ) -> bool:
 
         if not self.backend_url:
             bt.logging.warning("No backend URL configured for score syncing.")
             return 0
 
-        to_sync = list(self.pending())
-        synced = 0
         async with aiohttp.ClientSession() as session:
-            for row in to_sync:
-                payload = {
-                    "red": {
-                        "spymaster": {
-                            "hotkey": row["rs"],
-                            "score": row["score_rs"],
-                        },
-                        "operative": {
-                            "hotkey": row["ro"],
-                            "score": row["score_ro"],
-                        },
+            payload = {
+                "red": {
+                    "spymaster": {
+                        "hotkey": rs,
+                        "score": score_rs,
                     },
-                    "blue": {
-                        "spymaster": {
-                            "hotkey": row["bs"],
-                            "score": row["score_bs"],
-                        },
-                        "operative": {
-                            "hotkey": row["bo"],
-                            "score": row["score_bo"],
-                        },
+                    "operative": {
+                        "hotkey": ro,
+                        "score": score_ro,
                     },
-                    "reason": row["reason"],
-                    "competition": row["competition"],
-                }
-                headers = self.signer() if self.signer else {}
-                try:
-                    async with session.patch(
-                        self.backend_url + "/" + row["room_id"],
-                        json=payload,
-                        headers=headers,
-                        timeout=10,
-                    ) as resp:
-                        if resp.status in (200, 201, 202, 204):
-                            self.mark_synced(row["room_id"])
-                            synced += 1
-                        else:
-                            text = await resp.text()
-                            bt.logging.error(
-                                f"Failed to sync score {row['room_id']}: {resp.status} {text}"
-                            )
-                except Exception as err:  # noqa: BLE001
-                    bt.logging.error(f"Exception syncing score {row['room_id']}: {err}")
-                bt.logging.info(f"Upload {synced} scores")
+                },
+                "blue": {
+                    "spymaster": {
+                        "hotkey": bs,
+                        "score": score_bs,
+                    },
+                    "operative": {
+                        "hotkey": bo,
+                        "score": score_bo,
+                    },
+                },
+                "reason": reason,
+                "competition": competition,
+            }
+            headers = self.signer() if self.signer else {}
+            try:
+                async with session.patch(
+                    self.backend_url + "/" + room_id,
+                    json=payload,
+                    headers=headers,
+                    timeout=10,
+                ) as resp:
+                    if resp.status in (200, 201, 202, 204):
+                        self.mark_synced(room_id)
+                    else:
+                        text = await resp.text()
+                        bt.logging.error(
+                            f"Failed to sync score {room_id}: {resp.status} {text}"
+                        )
+            except Exception as err:  # noqa: BLE001
+                bt.logging.error(f"Exception syncing score {room_id}: {err}")
             await self.sync_scores_all(session=session)
-        return synced
+        return True
 
     async def sync_scores_all(
         self, session: Optional[aiohttp.ClientSession] = None
