@@ -251,14 +251,12 @@ class BaseValidatorNeuron(BaseNeuron):
                 # Run multiple forwards concurrently.
                 self.loop.run_until_complete(self.concurrent_forward())
 
-                competition_interval = parse_interval_to_seconds(
-                    self.config.competition.interval
-                )
-                if time.time() - started_at < competition_interval:
+                game_interval = parse_interval_to_seconds(self.config.game.interval)
+                if time.time() - started_at < game_interval:
                     bt.logging.info(
-                        f"Sleeping for {competition_interval - (time.time() - started_at)} seconds."
+                        f"Sleeping for {game_interval - (time.time() - started_at)} seconds."
                     )
-                    time.sleep(competition_interval - (time.time() - started_at))
+                    time.sleep(game_interval - (time.time() - started_at))
 
                 # Check if we should exit.
                 if self.should_exit:

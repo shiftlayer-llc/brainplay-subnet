@@ -251,10 +251,10 @@ def add_validator_args(cls, parser):
     )
 
     parser.add_argument(
-        "--competition.interval",
+        "--game.interval",
         type=str,
         default="5 minutes",
-        help="Interval to run competitions",
+        help="Interval to run game",
     )
 
     parser.add_argument(
