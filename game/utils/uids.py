@@ -14,11 +14,18 @@ def make_available_pool(self, exclude: List[int] = None) -> List[int]:
     available_pool = [int(uid) for uid in self.metagraph.uids]
     # Step 1: Exclude uids in the exclude list
     available_pool = [uid for uid in available_pool if uid not in (exclude or [])]
-    # Step 2: Exclude uids game count in current epoch is non-zero
+    # Step 2: Choose uids which have minimum global game count in current epoch
+    minimum_global_count = min(
+        [
+            self._global_counts_in_epoch.get(self.metagraph.hotkeys[uid], 0)
+            for uid in available_pool
+        ]
+    )
     available_pool = [
         uid
         for uid in available_pool
-        if self._global_counts_in_epoch.get(self.metagraph.hotkeys[uid], 0) == 0
+        if self._global_counts_in_epoch.get(self.metagraph.hotkeys[uid], 0)
+        == minimum_global_count
     ]
     bt.logging.debug(
         f"Available pool after exclusions: {available_pool}, counts: {[self._global_counts_in_epoch.get(self.metagraph.hotkeys[uid], 0) for uid in available_pool]}"
@@ -68,11 +75,18 @@ def make_available_pool_for_second_player(self, exclude: List[int] = None) -> Li
     available_pool = [int(uid) for uid in self.metagraph.uids]
     # Step 1: Exclude uids in the exclude list
     available_pool = [uid for uid in available_pool if uid not in (exclude or [])]
-    # Step 2: Exclude uids game count in current epoch is non-zero
+    # Step 2: Choose uids which have minimum global game count in current epoch
+    minimum_global_count = min(
+        [
+            self._global_counts_in_epoch.get(self.metagraph.hotkeys[uid], 0)
+            for uid in available_pool
+        ]
+    )
     available_pool = [
         uid
         for uid in available_pool
-        if self._global_counts_in_epoch.get(self.metagraph.hotkeys[uid], 0) == 0
+        if self._global_counts_in_epoch.get(self.metagraph.hotkeys[uid], 0)
+        == minimum_global_count
     ]
     bt.logging.debug(
         f"Available pool after exclusions: {available_pool}, counts: {[self._global_counts_in_epoch.get(self.metagraph.hotkeys[uid], 0) for uid in available_pool]}"
