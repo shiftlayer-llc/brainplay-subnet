@@ -12,7 +12,7 @@ from datetime import timedelta
 
 
 # Default scoring window. Can be overridden via CLI: --scoring.interval
-SCORING_INTERVAL = "2 days"
+SCORING_INTERVAL = "1 days"
 
 _UNITS = {
     "s": 1,
