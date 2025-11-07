@@ -247,8 +247,16 @@ class BaseValidatorNeuron(BaseNeuron):
                     )
                     time.sleep(12)
                     continue
+                started_at = time.time()
                 # Run multiple forwards concurrently.
                 self.loop.run_until_complete(self.concurrent_forward())
+
+                game_interval = parse_interval_to_seconds(self.config.game.interval)
+                if time.time() - started_at < game_interval:
+                    bt.logging.info(
+                        f"Sleeping for {game_interval - (time.time() - started_at)} seconds."
+                    )
+                    time.sleep(game_interval - (time.time() - started_at))
 
                 # Check if we should exit.
                 if self.should_exit:
@@ -424,9 +432,28 @@ class BaseValidatorNeuron(BaseNeuron):
                 comp_value, since_ts, end_ts
             )
         )
+        hotkeys_with_minimum_stake = [
+            self.metagraph.hotkeys[uid]
+            for uid in range(self.metagraph.n)
+            if self.metagraph.S[uid] >= self.config.neuron.minimum_stake_requirement
+        ]
+        avg_scores = {
+            hotkey: score
+            for hotkey, score in avg_scores.items()
+            if hotkey in hotkeys_with_minimum_stake
+        }
+        counts = {
+            hotkey: count
+            for hotkey, count in counts.items()
+            if hotkey in hotkeys_with_minimum_stake
+        }
         # Set record count limit for setting weights to avoid actors with few high scores (e.g new registrations)
         median_count = np.median(
-            [counts.get(hotkey, 0) for hotkey in self.metagraph.hotkeys]
+            [
+                counts.get(self.metagraph.hotkeys[uid], 0)
+                for uid in range(self.metagraph.n)
+                if self.metagraph.S[uid] >= self.config.neuron.minimum_stake_requirement
+            ]
         )
         record_count_limit = median_count - 3
         bt.logging.info(
