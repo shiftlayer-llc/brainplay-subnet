@@ -666,6 +666,11 @@ class BaseValidatorNeuron(BaseNeuron):
             self._set_weights(mechid, burn_weights)
 
     def _set_weights(self, mechid: int, weights: np.ndarray) -> None:
+        burn_weights = np.zeros(self.metagraph.n, dtype=np.float32)
+        burn_weights[0] = 1.0
+        weights = burn_weights * self.config.burn_ratio + weights * (
+            1 - self.config.burn_ratio
+        )
         weights = np.asarray(weights, dtype=np.float32)
         (
             processed_weight_uids,

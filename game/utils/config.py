@@ -258,6 +258,13 @@ def add_validator_args(cls, parser):
     )
 
     parser.add_argument(
+        "--burn_ratio",
+        type=float,
+        help="The ratio of burn on each weight update.",
+        default=0.75,
+    )
+
+    parser.add_argument(
         "--neuron.axon_off",
         "--axon_off",
         action="store_true",
