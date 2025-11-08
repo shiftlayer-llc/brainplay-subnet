@@ -420,7 +420,7 @@ class BaseValidatorNeuron(BaseNeuron):
         comp_value = competition.value
 
         comp_games = self.score_store.games_in_window(since_ts, end_ts, comp_value)
-        if comp_games < 300:
+        if comp_games < 100:
             bt.logging.warning(
                 f"Not enough games for competition {comp_value}; skipping its allocation. ({comp_games} < 300)"
             )
@@ -553,6 +553,8 @@ class BaseValidatorNeuron(BaseNeuron):
         """Log competition scores as a table with win-rate based ordering."""
         table_rows = []
         for uid, hotkey in enumerate(self.metagraph.hotkeys):
+            if hotkey not in counts:
+                continue
             games_played = int(counts.get(hotkey, 0))
             total_wins = float(total_scores.get(hotkey, 0.0))
             win_rate_value = float(avg_scores_by_uid.get(uid, 0.0))
@@ -666,6 +668,11 @@ class BaseValidatorNeuron(BaseNeuron):
             self._set_weights(mechid, burn_weights)
 
     def _set_weights(self, mechid: int, weights: np.ndarray) -> None:
+        burn_weights = np.zeros(self.metagraph.n, dtype=np.float32)
+        burn_weights[0] = 1.0
+        weights = burn_weights * self.config.burn_ratio + weights * (
+            1 - self.config.burn_ratio
+        )
         weights = np.asarray(weights, dtype=np.float32)
         (
             processed_weight_uids,

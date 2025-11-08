@@ -14,6 +14,8 @@ def make_available_pool(self, exclude: List[int] = None) -> List[int]:
     available_pool = [int(uid) for uid in self.metagraph.uids]
     # Step 1: Exclude uids in the exclude list
     available_pool = [uid for uid in available_pool if uid not in (exclude or [])]
+    if not available_pool:
+        return []
     # Step 2: Choose uids which have minimum global game count in current epoch
     minimum_global_count = min(
         [
@@ -75,6 +77,8 @@ def make_available_pool_for_second_player(self, exclude: List[int] = None) -> Li
     available_pool = [int(uid) for uid in self.metagraph.uids]
     # Step 1: Exclude uids in the exclude list
     available_pool = [uid for uid in available_pool if uid not in (exclude or [])]
+    if not available_pool:
+        return []
     # Step 2: Choose uids which have minimum global game count in current epoch
     minimum_global_count = min(
         [

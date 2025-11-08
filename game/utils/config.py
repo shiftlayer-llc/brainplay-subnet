@@ -91,7 +91,7 @@ def add_args(cls, parser):
         "--neuron.epoch_length",
         type=int,
         help="The default epoch length (how often we set weights, measured in 12 second blocks).",
-        default=120,
+        default=100,
     )
 
     parser.add_argument(
@@ -255,6 +255,13 @@ def add_validator_args(cls, parser):
         type=str,
         default="5 minutes",
         help="Interval to run game",
+    )
+
+    parser.add_argument(
+        "--burn_ratio",
+        type=float,
+        help="The ratio of burn on each weight update.",
+        default=0.75,
     )
 
     parser.add_argument(
