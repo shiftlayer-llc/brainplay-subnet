@@ -420,7 +420,7 @@ class BaseValidatorNeuron(BaseNeuron):
         comp_value = competition.value
 
         comp_games = self.score_store.games_in_window(since_ts, end_ts, comp_value)
-        if comp_games < 10:
+        if comp_games < 100:
             bt.logging.warning(
                 f"Not enough games for competition {comp_value}; skipping its allocation. ({comp_games} < 300)"
             )
