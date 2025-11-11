@@ -43,7 +43,7 @@ async def ping_uids(dendrite: bt.dendrite, metagraph, uids, timeout=30):
         bt.logging.info(f"Pinging {len(uids)} uids with timeout {timeout}s...")
         responses = await dendrite.forward(
             axons,
-            game.protocol.Ping(),
+            game.protocol.PingSynapse(),
             timeout=timeout,
             deserialize=True,
         )

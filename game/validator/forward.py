@@ -22,7 +22,7 @@ import uuid
 import bittensor as bt
 import aiohttp
 import json
-from game.protocol import GameChatMessage, GameSynapse, GameSynapseOutput
+from game.protocol import CodenamesChatMessage, CodenamesSynapse, CodenamesSynapseOutput
 from game.utils.opSysPrompt import opSysPrompt
 from game.utils.spySysPrompt import spySysPrompt
 from game.utils.ruleSysPrompt import ruleSysPrompt
@@ -257,7 +257,7 @@ async def remove_room(self, roomId):
         bt.logging.error(f"Unexpected error deleting room {roomId}: {e}")
 
 
-async def get_llm_response(synapse: GameSynapse) -> GameSynapseOutput:
+async def get_llm_response(synapse: CodenamesSynapse) -> CodenamesSynapseOutput:
 
     async def get_gpt5_response(messages, effort="minimal"):
         try:
@@ -339,7 +339,7 @@ async def get_llm_response(synapse: GameSynapse) -> GameSynapseOutput:
     else:
         guesses = None
 
-    output = GameSynapseOutput(
+    output = CodenamesSynapseOutput(
         clue_text=clue, number=number, reasoning=reasoning, guesses=guesses
     )
     return output
@@ -508,7 +508,7 @@ async def forward(self):
             else None
         )
 
-        synapse = GameSynapse(
+        synapse = CodenamesSynapse(
             your_team=your_team,
             your_role=your_role,
             remaining_red=remaining_red,
@@ -517,7 +517,7 @@ async def forward(self):
             your_number=your_number,
             cards=cards,
             chat_history=[
-                GameChatMessage(
+                CodenamesChatMessage(
                     team=chat.team.value,
                     sender=chat.sender.value,
                     message=chat.message,

@@ -1,6 +1,6 @@
 # The MIT License (MIT)
 # Copyright © 2023 Yuma Rao
-# Copyright © 2025 ShiftLayer 
+# Copyright © 2025 ShiftLayer
 
 # Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
 # documentation files (the “Software”), to deal in the Software without restriction, including without limitation
@@ -23,14 +23,19 @@ from pydantic import BaseModel, Field
 from game import __version__
 
 
-class Ping(bt.Synapse):
+class PingSynapse(bt.Synapse):
     """Lightweight ping used by validators to discover available miners."""
 
     version: str = __version__
     is_available: bool = False
 
 
-class GameChatMessage(BaseModel):
+# ==========================
+# Codenames Protocol
+# ==========================
+
+
+class CodenamesChatMessage(BaseModel):
     team: str
     sender: str
     message: str
@@ -39,7 +44,7 @@ class GameChatMessage(BaseModel):
     guesses: list[str] | None = None
 
 
-class GameSynapseOutput(BaseModel):
+class CodenamesSynapseOutput(BaseModel):
     clue_text: typing.Optional[str] = None
     number: typing.Optional[int] = None
     guesses: typing.Optional[typing.List[str]] = None
@@ -47,9 +52,9 @@ class GameSynapseOutput(BaseModel):
     clue_validity: typing.Optional[bool] = None
 
 
-class GameSynapse(bt.Synapse):
+class CodenamesSynapse(bt.Synapse):
     """
-    The GameSynapse class is a synapse that represents the status of the game.
+    The CodenamesSynapse class is a synapse that represents the status of the game.
     Attributes:
     - your_team: TeamColor
     - your_role: Role
@@ -68,10 +73,10 @@ class GameSynapse(bt.Synapse):
     your_clue: typing.Optional[str] = None
     your_number: typing.Optional[int] = None
     cards: typing.List[CardType] = None
-    chat_history: typing.List[GameChatMessage] = None
-    output: GameSynapseOutput | None = None
+    chat_history: typing.List[CodenamesChatMessage] = None
+    output: CodenamesSynapseOutput | None = None
 
-    def deserialize(self) -> GameSynapseOutput | None:
+    def deserialize(self) -> CodenamesSynapseOutput | None:
         """
         Deserialize the output. This method retrieves the response from
         the miner in the form of output, deserializes it and returns it
@@ -87,4 +92,74 @@ class GameSynapse(bt.Synapse):
         >>> synapse_instance.deserialize()
         GameSynapseOutput(clue_text="example", number=1)
         """
+        return self.output
+
+
+# ==========================
+# LLM 20 Questions Protocol
+# ==========================
+
+
+class TwentyQExchange(BaseModel):
+    """
+    Represents a single Q/A exchange in the 20 Questions game.
+
+    - question: natural-language question posed by the questioner.
+    - answer: reply from the responder (expected values: "yes", "no", "unknown").
+    - reasoning: optional rationale provided by the responder.
+    """
+
+    question: str = Field(..., description="Question asked by the questioner.")
+    answer: typing.Optional[str] = Field(
+        default=None,
+        description="Responder's answer: 'yes', 'no', or 'unknown'.",
+    )
+    reasoning: typing.Optional[str] = None
+
+
+class TwentyQSynapseOutput(BaseModel):
+    """
+    Output payload for the 20Q synapse. Only one of the fields is typically
+    set per turn depending on the role (questioner vs responder).
+
+    - next_question: proposed next question from the questioner.
+    - answer: responder's answer to the latest question.
+    - guess: optional final guess of the hidden object/entity.
+    - is_correct_guess: responder/oracle marks whether the guess is correct.
+    - confidence: optional confidence score in the answer or guess.
+    - reasoning: natural-language explanation supporting the answer/guess.
+    """
+
+    next_question: typing.Optional[str] = None
+    answer: typing.Optional[str] = None
+    guess: typing.Optional[str] = None
+    is_correct_guess: typing.Optional[bool] = None
+    confidence: typing.Optional[float] = None
+    reasoning: typing.Optional[str] = None
+
+
+class TwentyQSynapse(bt.Synapse):
+    """
+    Synapse describing the current state of an LLM-driven 20 Questions game.
+
+    Roles:
+    - questioner: proposes the next question aimed at identifying the target.
+    - responder: answers yes/no/unknown to questions and may provide reasoning.
+
+    Attributes:
+    - role: current role of the miner ("questioner" or "responder").
+    - remaining_questions: how many questions remain (starts at 20).
+    - qa_history: list of prior exchanges to maintain context across turns.
+    - target_hint: optional short hint about the target category/domain.
+    - output: TwentyQSynapseOutput containing either a question or an answer.
+    """
+
+    role: str = None  # "questioner" or "responder"
+    remaining_questions: int = 20
+    qa_history: typing.List[TwentyQExchange] = None
+    target_hint: typing.Optional[str] = None
+    output: TwentyQSynapseOutput | None = None
+
+    def deserialize(self) -> TwentyQSynapseOutput | None:
+        """Return the structured output provided by the miner."""
         return self.output

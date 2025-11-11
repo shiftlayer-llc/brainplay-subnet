@@ -28,7 +28,7 @@ from game.utils.spySysPrompt import spySysPrompt
 from game.utils.opSysPrompt import opSysPrompt
 
 # Bittensor Miner Template:
-from game.protocol import GameSynapse, GameSynapseOutput, Ping
+from game.protocol import CodenamesSynapse, CodenamesSynapseOutput, PingSynapse
 
 from openai import OpenAI
 from openai import (
@@ -99,7 +99,7 @@ class Miner(BaseMinerNeuron):
             return False
         return True
 
-    async def pong(self, synapse: Ping) -> Ping:
+    async def pong(self, synapse: PingSynapse) -> PingSynapse:
         """
         Responds to a Ping with a Pong response, indicating the miner's availability.
 
@@ -114,8 +114,8 @@ class Miner(BaseMinerNeuron):
         return synapse
 
     async def forward(
-        self, synapse: game.protocol.GameSynapse
-    ) -> game.protocol.GameSynapse:
+        self, synapse: game.protocol.CodenamesSynapse
+    ) -> game.protocol.CodenamesSynapse:
         """
         Handles the incoming 'GameSynapse' by executing a series of operations based on the game state.
         This method should be customized to implement the specific logic required for the miner's function.
@@ -214,7 +214,7 @@ class Miner(BaseMinerNeuron):
         else:
             guesses = None
 
-        synapse.output = GameSynapseOutput(
+        synapse.output = CodenamesSynapseOutput(
             clue_text=clue,
             number=number,
             reasoning=reasoning,
@@ -293,14 +293,14 @@ class Miner(BaseMinerNeuron):
         return False, "Hotkey recognized!"
 
     async def blacklist(
-        self, synapse: game.protocol.GameSynapse
+        self, synapse: game.protocol.CodenamesSynapse
     ) -> typing.Tuple[bool, str]:
         return await self._blacklist(synapse)
 
-    async def blacklist_ping(self, synapse: Ping) -> typing.Tuple[bool, str]:
+    async def blacklist_ping(self, synapse: PingSynapse) -> typing.Tuple[bool, str]:
         return await self._blacklist(synapse)
 
-    async def priority(self, synapse: game.protocol.GameSynapse) -> float:
+    async def priority(self, synapse: game.protocol.CodenamesSynapse) -> float:
         """
         The priority function is responsible for determining the sequence in which requests are processed. Requests
         deemed more valuable or of higher priority are handled before others. It is crucial to carefully design your
