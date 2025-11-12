@@ -95,8 +95,125 @@ check_package_installed() {
 }
 
 #==============================================================================
-# LOGGING FUNCTIONS
+# GRACEFUL SHUTDOWN FUNCTIONS
 #==============================================================================
+
+# Send shutdown request signal to validator process
+request_graceful_shutdown() {
+    local pid=$(pm2 pid "$validator_proc_name" 2>/dev/null || echo "")
+    
+    if [[ -n "$pid" && "$pid" != "0" ]]; then
+        log_info "Sending graceful shutdown request to validator (PID: $pid)"
+        if kill -USR1 "$pid" 2>/dev/null; then
+            log_info "Shutdown request signal sent successfully"
+            return 0
+        else
+            log_error "Failed to send shutdown request signal"
+            return 1
+        fi
+    else
+        log_warn "Validator process not found or not running"
+        return 1
+    fi
+}
+
+# Check if validator process is ready for shutdown
+check_shutdown_ready() {
+    local pid=$(pm2 pid "$validator_proc_name" 2>/dev/null || echo "")
+    
+    if [[ -n "$pid" && "$pid" != "0" ]]; then
+        # Send status request signal and check logs for readiness
+        log_debug "Sending status request to validator (PID: $pid)"
+        kill -USR2 "$pid" 2>/dev/null || true
+        
+        # Fetch more logs and detect competition-prefixed outputs
+        local logs=$(pm2 logs "$validator_proc_name" --lines 100 --nostream 2>/dev/null)
+        local clue_present=$(echo "$logs" | grep -q "^\[CLUE\]"; echo $?)
+        local guess_present=$(echo "$logs" | grep -q "^\[GUESS\]"; echo $?)
+
+        if [[ $clue_present -eq 0 && $guess_present -eq 0 ]]; then
+            local clue_ready=$(echo "$logs" | grep -E "^\[CLUE\].*(shutdown ready|Game ended|No active game)" | tail -1)
+            local guess_ready=$(echo "$logs" | grep -E "^\[GUESS\].*(shutdown ready|Game ended|No active game)" | tail -1)
+            if [[ -n "$clue_ready" && -n "$guess_ready" ]]; then
+                log_info "Both competitions ready for shutdown"
+                return 0
+            else
+                [[ -n "$clue_ready" ]] && log_debug "CLUE ready" || log_debug "CLUE waiting"
+                [[ -n "$guess_ready" ]] && log_debug "GUESS ready" || log_debug "GUESS waiting"
+                return 1
+            fi
+        fi
+
+        # Fallback: single-process readiness
+        local recent_logs=$(echo "$logs" | grep -E "(shutdown ready|Game ended|No active game)" | tail -1)
+        
+        if [[ -n "$recent_logs" ]]; then
+            log_info "Validator reports ready for shutdown: $recent_logs"
+            return 0
+        else
+            log_debug "Validator not yet ready for shutdown"
+            return 1
+        fi
+    else
+        log_warn "Validator process not found"
+        return 0  # Consider ready if process doesn't exist
+    fi
+}
+
+# Wait for graceful shutdown with timeout
+wait_for_graceful_shutdown() {
+    local timeout=300  # 5 minutes max wait
+    local elapsed=0
+    
+    log_info "Waiting for validator to be ready for shutdown (max ${timeout}s timeout)..."
+    
+    while [[ $elapsed -lt $timeout ]]; do
+        if check_shutdown_ready; then
+            log_info "Validator is ready for shutdown"
+            return 0
+        fi
+        
+        sleep 10
+        elapsed=$((elapsed + 10))
+        
+        # Send periodic status requests
+        if [[ $((elapsed % 30)) -eq 0 ]]; then
+            log_info "Still waiting for validator to be ready for shutdown... (${elapsed}s elapsed)"
+        fi
+    done
+    
+    log_warn "Timeout reached (${timeout}s) - forcing shutdown"
+    return 1
+}
+
+# Force shutdown if graceful shutdown fails
+force_shutdown() {
+    log_warn "Forcing validator shutdown"
+    pm2 stop "$validator_proc_name" 2>/dev/null || true
+    sleep 2
+}
+
+# Perform graceful restart of validator process
+graceful_restart_validator() {
+    log_info "Initiating graceful restart of validator process..."
+    
+    # Request graceful shutdown
+    if request_graceful_shutdown; then
+        # Wait for validator to be ready
+        if wait_for_graceful_shutdown; then
+            log_info "Validator ready for restart - proceeding with update"
+            return 0
+        else
+            log_warn "Graceful shutdown timeout - forcing restart"
+            force_shutdown
+            return 0
+        fi
+    else
+        log_warn "Failed to request graceful shutdown - forcing restart"
+        force_shutdown
+        return 0
+    fi
+}
 
 # Main logging function with timestamps
 log() {
@@ -249,9 +366,10 @@ create_backup() {
     cp "$REPO_DIR/setup.py" "$backup_path/" 2>/dev/null
     
     # Store current git commit hash and version
+    local absolute_backup_path="$BACKUP_DIR/$backup_name"
     cd "$REPO_DIR"
-    git rev-parse HEAD > "$backup_path/commit_hash.txt" 2>/dev/null
-    echo "$1" > "$backup_path/version.txt"
+    git rev-parse HEAD > "$absolute_backup_path/commit_hash.txt" 2>/dev/null
+    echo "$1" > "$absolute_backup_path/version.txt"
     
     if [[ $? -eq 0 ]]; then
         log_info "Backup created successfully at: $backup_path"
@@ -395,10 +513,10 @@ run_monitoring_loop() {
                             continue
                         fi
                         
-                        # Restart PM2 process
-                        log_info "Restarting PM2 process"
-                        if ! pm2 restart $validator_proc_name; then
-                            log_error "Failed to restart PM2 process. Rolling back..."
+                        # GRACEFUL RESTART: Use graceful restart instead of immediate restart
+                        log_info "Performing graceful restart of validator process..."
+                        if ! graceful_restart_validator; then
+                            log_error "Failed to restart validator process. Rolling back..."
                             rollback_from_backup "$backup_path"
                             sleep $CHECK_INTERVAL
                             continue
@@ -487,6 +605,8 @@ This script automatically starts a validator process and sets up continuous
 monitoring for updates. Both the validator and auto-update monitoring will 
 run persistently in the background using PM2.
 
+NEW FEATURE: Graceful shutdown mechanism prevents restarting during active games.
+
 Options:
   --check-interval SECONDS    Set update check interval (default: 1200)
   --log-file PATH             Set log file path
@@ -506,6 +626,15 @@ The script will automatically:
   - Start the auto-update monitoring process with PM2
   - Monitor for code updates and restart the validator when needed
   - Create backups before updates and rollback on failures
+  - GRACEFULLY handle restarts: waits for active games to complete before restarting
+
+Graceful Shutdown Process:
+  1. Auto-update script detects new version
+  2. Sends SIGUSR1 signal to validator (shutdown request)
+  3. Validator stops creating new games, waits for current game to end
+  4. Auto-update script waits for validator to report ready (up to 5 min)
+  5. Once ready, performs the restart
+  6. If timeout occurs, forces restart
 EOF
 }
 
@@ -633,6 +762,7 @@ main() {
     log_info "Validator process: $validator_proc_name"
     log_info "Monitor process: $monitor_proc_name"
     log_info "Both processes are now running persistently with PM2"
+    log_info "Graceful shutdown mechanism is active"
     log_info ""
     log_info "To check status: pm2 status"
     log_info "To view logs: pm2 logs $validator_proc_name or pm2 logs $monitor_proc_name"

@@ -26,6 +26,7 @@ import asyncio
 import argparse
 import threading
 import subprocess
+import signal
 from datetime import datetime, timezone
 import bittensor as bt
 import wandb
@@ -95,6 +96,14 @@ class BaseValidatorNeuron(BaseNeuron):
         self.thread: Union[threading.Thread, None] = None
         self.competition_process_1 = None  # Process for clue competition
         self.competition_process_2 = None  # Process for guess competition
+
+        # Initialize current competition early to avoid race with background thread
+        self.current_competition = None
+        try:
+            if getattr(self.config, "competition", "main") != "main":
+                self.current_competition = Competition(self.config.competition)
+        except Exception:
+            self.current_competition = None
 
     def serve_axon(self):
         """Serve axon to enable external connections."""
@@ -325,6 +334,25 @@ class BaseValidatorNeuron(BaseNeuron):
                     args=("GUESS", self.competition_process_2),
                     daemon=True,
                 ).start()
+
+                def _forward_signal(sig):
+                    try:
+                        if self.competition_process_1:
+                            self.competition_process_1.send_signal(sig)
+                        if self.competition_process_2:
+                            self.competition_process_2.send_signal(sig)
+                        bt.logging.info(
+                            f"Forwarded signal {sig} to competition subprocesses"
+                        )
+                    except Exception as err:
+                        bt.logging.error(f"Failed to forward signal {sig}: {err}")
+
+                signal.signal(
+                    signal.SIGUSR1, lambda s, f: _forward_signal(signal.SIGUSR1)
+                )
+                signal.signal(
+                    signal.SIGUSR2, lambda s, f: _forward_signal(signal.SIGUSR2)
+                )
             else:
                 self.thread = threading.Thread(target=self.run, daemon=True)
                 self.thread.start()
@@ -377,14 +405,23 @@ class BaseValidatorNeuron(BaseNeuron):
             bt.logging.debug("Stopping validator in background thread.")
             self.should_exit = True
             if self.config.competition == "main":
-                bt.logging.debug("Stopping competition subprocesses.")
+                bt.logging.debug(
+                    "Shutdown requested - waiting for competition subprocesses to exit."
+                )
                 if self.competition_process_1:
-                    self.competition_process_1.terminate()
-                    self.competition_process_1.wait(timeout=5)
+                    try:
+                        self.competition_process_1.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        bt.logging.warning(
+                            "CLUE subprocess still running; leaving it to external supervisor."
+                        )
                 if self.competition_process_2:
-                    self.competition_process_2.terminate()
-                    self.competition_process_2.wait(timeout=5)
-                bt.logging.debug("Stopped competition subprocesses.")
+                    try:
+                        self.competition_process_2.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        bt.logging.warning(
+                            "GUESS subprocess still running; leaving it to external supervisor."
+                        )
             if self.thread:
                 self.thread.join(5)
             self.is_running = False

@@ -61,7 +61,26 @@ class Validator(BaseValidatorNeuron):
 
 # The main function parses the configuration and runs the validator.
 if __name__ == "__main__":
+    from game.validator.graceful_shutdown import get_shutdown_manager
+    import asyncio
+
+    shutdown_manager = get_shutdown_manager()
+
     with Validator() as validator:
-        while True:
-            # bt.logging.info(f"Validator running... {time.time()}")
-            time.sleep(5)
+        # In main coordinator mode, just idle; competition subprocesses handle games.
+        if getattr(validator.config, "competition", "main") == "main":
+            while True:
+                time.sleep(5)
+        else:
+            while True:
+                if shutdown_manager.is_shutdown_requested():
+                    bt.logging.info(
+                        "Graceful shutdown requested by auto-updater - validator will exit soon"
+                    )
+                    break
+                try:
+                    asyncio.run(validator.forward())
+                except Exception as e:
+                    bt.logging.error(f"Error in validator forward pass: {e}")
+                    time.sleep(10)
+                time.sleep(5)
