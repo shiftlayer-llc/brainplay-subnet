@@ -229,6 +229,44 @@ class ScoreStore:
             cur.close()
         return rows
 
+    def add_miner_record(
+        self,
+        *,
+        validator: str,
+        competition: str,
+        hotkey: str,
+        room_id: str,
+        score: int,
+        ts: float,
+    ) -> None:
+        """Insert or update a single miner record used for window averages.
+
+        This is the minimal path needed for competitions without team roles,
+        like 20Q where validator plays separately with each miner.
+        """
+        with self._lock:
+            cur = self.conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO miner_records(validator, competition, hotkey, room_id, score, ts, synced_at)
+                VALUES(?,?,?,?,?,?, strftime('%s','now'))
+                ON CONFLICT(room_id, hotkey) DO UPDATE SET
+                    score=excluded.score,
+                    ts=excluded.ts,
+                    synced_at=excluded.synced_at
+                ;
+                """,
+                (
+                    validator,
+                    competition,
+                    hotkey,
+                    room_id,
+                    int(score),
+                    int(ts),
+                ),
+            )
+            cur.close()
+
     def window_average_scores_by_hotkey(
         self, competition: Optional[str], since_ts: float, end_ts: float
     ) -> Dict[str, float]:

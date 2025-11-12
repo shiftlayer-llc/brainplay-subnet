@@ -22,12 +22,19 @@ import uuid
 import bittensor as bt
 import aiohttp
 import json
-from game.protocol import CodenamesChatMessage, CodenamesSynapse, CodenamesSynapseOutput
+from game.protocol import (
+    CodenamesChatMessage,
+    CodenamesSynapse,
+    CodenamesSynapseOutput,
+    TwentyQSynapse,
+    TwentyQSynapseOutput,
+    TwentyQExchange,
+)
 from game.utils.opSysPrompt import opSysPrompt
 from game.utils.spySysPrompt import spySysPrompt
 from game.utils.ruleSysPrompt import ruleSysPrompt
 from game.validator.reward import get_rewards
-from game.utils.uids import choose_players
+from game.utils.uids import choose_players, choose_many_players
 import random
 import typing
 from game.utils.game import Competition, TParticipant
@@ -46,7 +53,7 @@ import os
 client = OpenAI(api_key=os.environ.get("OPENAI_KEY"))
 
 
-def organize_team(self, competition, uids):
+def organize_team_codenames(self, competition, uids):
     """
     Organize the team with 2 miners randomly
 
@@ -65,7 +72,7 @@ def organize_team(self, competition, uids):
     return team1, team2
 
 
-def resetAnimations(self, cards):
+def reset_animations_codenames(self, cards):
     """
     Reset the animation of the cards
 
@@ -77,7 +84,7 @@ def resetAnimations(self, cards):
         card.was_recently_revealed = False
 
 
-async def create_room(self, game_state: GameState):
+async def create_room_codenames(self, game_state: GameState):
     endpoint = f"{self.backend_base}/api/v1/rooms/create"
     try:
         async with aiohttp.ClientSession() as session:
@@ -146,7 +153,7 @@ async def create_room(self, game_state: GameState):
         return None
 
 
-async def update_room(self, game_state: GameState, roomId):
+async def update_room_codenames(self, game_state: GameState, roomId):
     endpoint = f"{self.backend_base}/api/v1/rooms/{roomId}"
     try:
         async with aiohttp.ClientSession() as session:
@@ -228,7 +235,7 @@ async def update_room(self, game_state: GameState, roomId):
         bt.logging.error(f"Unexpected error updating room {roomId}: {e}")
 
 
-async def remove_room(self, roomId):
+async def remove_room_codenames(self, roomId):
     # return
     endpoint = f"{self.backend_base}/api/v1/rooms/{roomId}"
     try:
@@ -257,7 +264,7 @@ async def remove_room(self, roomId):
         bt.logging.error(f"Unexpected error deleting room {roomId}: {e}")
 
 
-async def get_llm_response(synapse: CodenamesSynapse) -> CodenamesSynapseOutput:
+async def get_llm_response_codenames(synapse: CodenamesSynapse) -> CodenamesSynapseOutput:
 
     async def get_gpt5_response(messages, effort="minimal"):
         try:
@@ -345,20 +352,228 @@ async def get_llm_response(synapse: CodenamesSynapse) -> CodenamesSynapseOutput:
     return output
 
 
-async def forward(self):
+async def forward_twentyq(self):
     """
-    This method is invoked by the validator at each time step.
+    Run a 20Q round where the validator plays separately with up to 10 miners.
 
-    Its main function is to query the network and evaluate the responses.
+    Flow per miner:
+    - Validator chooses a hidden target word locally (from the codenames wordlist).
+    - Miner acts as questioner, proposing next yes/no question each turn.
+    - Validator acts as responder: answers yes/no/unknown using a simple rule-of-thumb
+      LLM or heuristic and optionally provides a hint.
+    - Miner can submit a final guess at any time via `guess` in output.
+    - If miner guesses correctly within 20 questions, they score +1; else 0.
 
-    Parameters:
-        self (bittensor.neuron.Neuron): The neuron instance containing all necessary state information for the validator.
-
+    Backend integration is TBD — room creation/update/removal calls are skipped with TODOs.
     """
-    competition = self.current_competition
+    competition = Competition.TWENTYQ_COMPETITION
 
-    # Sync any pending score records to the database
+    # Sync latest scores snapshot to keep fairness windows fresh.
     await self.score_store.sync_scores_all()
+
+    # Select up to 10 miners fairly.
+    miner_uids, observer_hotkeys = await choose_many_players(
+        self, competition=competition, k=10
+    )
+    if not miner_uids:
+        bt.logging.warning("No miners available for 20Q round.")
+        return
+
+    # Per-miner session state
+    sessions = []
+    rng = random.Random(int(time.time() * 1000))
+
+    # Target selection: load from external 20Q wordlist file.
+    targets = []
+    try:
+        wordlist_path = os.path.join(
+            os.path.dirname(__file__), "..", "utils", "wordlist-20q.txt"
+        )
+        with open(wordlist_path, "r", encoding="utf-8") as f:
+            loaded = [w.strip() for w in f.readlines()]
+            loaded = [w for w in loaded if w and " " not in w]
+            if loaded:
+                targets = loaded
+            else:
+                bt.logging.warning(
+                    "20Q wordlist file is empty or invalid; using default targets."
+                )
+    except Exception as err:  # noqa: BLE001
+        bt.logging.warning(
+            f"Failed to load 20Q wordlist file; using default targets. Error: {err}"
+        )
+
+    # Prepare axons and hotkeys
+    axons = [self.metagraph.axons[uid] for uid in miner_uids]
+    hotkeys = [axon.hotkey for axon in axons]
+
+    # Observers are not used in 20Q. We log and ignore for now.
+    if observer_hotkeys:
+        bt.logging.info(f"Observers (ignored for 20Q): {observer_hotkeys}")
+
+    # Create sessions
+    for idx, uid in enumerate(miner_uids):
+        target = rng.choice(targets)
+        sessions.append(
+            {
+                "uid": uid,
+                "axon": axons[idx],
+                "hotkey": hotkeys[idx],
+                "target": target,
+                "remaining": 20,
+                "qa_history": [],
+                "won": False,
+                "room_id": None,  # TODO: create backend room once API defined
+            }
+        )
+
+    bt.logging.info(
+        f"Starting 20Q with miners {miner_uids}; targets chosen (hidden)."
+    )
+
+    async def ask_question(session):
+        """Query miner for next question or final guess."""
+        syn = TwentyQSynapse(
+            role="questioner",
+            remaining_questions=session["remaining"],
+            qa_history=[
+                TwentyQExchange(
+                    question=ex["question"],
+                    answer=ex.get("answer"),
+                    reasoning=ex.get("reasoning"),
+                )
+                for ex in session["qa_history"]
+            ],
+            target_hint=None,
+        )
+        response = await self.dendrite(
+            axons=session["axon"], synapse=syn, deserialize=True, timeout=30
+        )
+        return response
+
+    async def answer_question(session, question: str) -> TwentyQSynapseOutput:
+        """Answer the miner's yes/no question about the target using a simple heuristic.
+
+        Heuristic: We use a lightweight LLM check; if unavailable, we default to "unknown".
+        """
+        try:
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are answering 20 Questions truthfully about a hidden word. "
+                        "Respond only with 'yes', 'no', or 'unknown'."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"Target: {session['target']}. Question: {question}",
+                },
+            ]
+            result = client.responses.create(
+                model="gpt-5",
+                input=messages,
+                reasoning={"effort": "low"},
+            )
+            answer_text = str(result.output_text).strip().lower()
+            if "yes" in answer_text:
+                ans = "yes"
+            elif "no" in answer_text:
+                ans = "no"
+            else:
+                ans = "unknown"
+            return TwentyQSynapseOutput(answer=ans, reasoning=None)
+        except Exception as e:  # noqa: BLE001
+            bt.logging.warning(f"Answer heuristic failed: {e}")
+            return TwentyQSynapseOutput(answer="unknown")
+
+    # Per-miner loop: up to 20 questions or until guess is correct.
+    async def run_session(session):
+        for turn in range(20):
+            if session["won"]:
+                break
+            session["remaining"] = 20 - turn
+            # Ask miner for next question/guess
+            response = await ask_question(session)
+            if response is None:
+                bt.logging.warning(f"No response from miner {session['uid']} on turn {turn+1}")
+                continue
+            # Handle final guess if provided
+            guess = getattr(response, "guess", None)
+            if isinstance(guess, str) and guess.strip():
+                is_correct = guess.strip().lower() == session["target"].lower()
+                if is_correct:
+                    session["won"] = True
+                    bt.logging.info(
+                        f"Miner {session['uid']} guessed correctly: '{guess}'."
+                    )
+                else:
+                    bt.logging.info(
+                        f"Miner {session['uid']} guessed '{guess}' (incorrect)."
+                    )
+                break
+
+            # Otherwise, expect a question from miner
+            question = getattr(response, "next_question", None)
+            if not isinstance(question, str) or not question.strip():
+                bt.logging.warning(
+                    f"Miner {session['uid']} did not provide a valid question."
+                )
+                continue
+
+            # Validator answers
+            output = await answer_question(session, question.strip())
+            session["qa_history"].append({"question": question.strip(), "answer": output.answer})
+
+            # Send the answer back to miner (responder role)
+            syn_resp = TwentyQSynapse(
+                role="responder",
+                remaining_questions=session["remaining"],
+                qa_history=[
+                    TwentyQExchange(
+                        question=ex["question"],
+                        answer=ex.get("answer"),
+                        reasoning=ex.get("reasoning"),
+                    )
+                    for ex in session["qa_history"]
+                ],
+                target_hint=None,
+            )
+            syn_resp.output = output
+            # We send but do not need a response back for responder turn.
+            try:
+                await self.dendrite(
+                    axons=session["axon"], synapse=syn_resp, deserialize=False, timeout=15
+                )
+            except Exception:
+                # miner may ignore; proceed regardless
+                pass
+
+        # Score: +1 if won, else 0
+        score = 1 if session["won"] else 0
+        try:
+            self.score_store.add_miner_record(
+                validator=self.wallet.hotkey.ss58_address,
+                competition=competition.value,
+                hotkey=session["hotkey"],
+                room_id=session["room_id"] or str(uuid.uuid4()),
+                score=score,
+                ts=time.time(),
+            )
+        except Exception as err:  # noqa: BLE001
+            bt.logging.error(
+                f"Failed to persist 20Q record for miner {session['uid']}: {err}"
+            )
+
+    await asyncio.gather(*[run_session(s) for s in sessions])
+
+    # TODO: Once backend endpoints are defined for 20Q, create/update/remove rooms appropriately.
+    bt.logging.info("20Q round complete; records stored locally.")
+
+
+async def forward_codenames(self):
+    """Run one Codenames round, modularized from the generic forward()."""
+    competition = self.current_competition
 
     miner_uids, observer_hotkeys = await choose_players(
         self, competition=competition, k=2
@@ -367,7 +582,7 @@ async def forward(self):
     if len(miner_uids) < 2:
         return
 
-    (red_team, blue_team) = organize_team(self, competition, miner_uids)
+    (red_team, blue_team) = organize_team_codenames(self, competition, miner_uids)
     bt.logging.info(f"\033[91mRed Team: {red_team}\033[0m")
     bt.logging.info(f"\033[94mBlue Team: {blue_team}\033[0m")
 
@@ -435,7 +650,7 @@ async def forward(self):
 
     # Create new room via API call
     # ===============🤞ROOM CREATE===================
-    roomId = await create_room(self, game_state)
+    roomId = await create_room_codenames(self, game_state)
     if roomId is None:
         bt.logging.error("Failed to create room, exiting.")
         time.sleep(10)
@@ -491,7 +706,7 @@ async def forward(self):
                 to_uid = blue_team["operative"]
 
             # Remove animation of recently revealed cards
-            resetAnimations(self, game_state.cards)
+            reset_animations_codenames(self, game_state.cards)
 
         your_team = game_state.currentTeam
         your_role = game_state.currentRole
@@ -555,7 +770,7 @@ async def forward(self):
             )
         else:
             bt.logging.info(f"⏬ Sending game query to LLM for {your_role}")
-            response = await get_llm_response(synapse)
+            response = await get_llm_response_codenames(synapse)
             if response is None:
                 bt.logging.error("Failed to get response from LLM, exiting.")
                 time.sleep(10)
@@ -584,7 +799,7 @@ async def forward(self):
                     if game_state.currentTeam == TeamColor.BLUE
                     else TeamColor.BLUE
                 )
-                resetAnimations(self, game_state.cards)
+                reset_animations_codenames(self, game_state.cards)
                 end_reason = "no_response"
                 bt.logging.info(
                     f"💀 No response received! Game over. Winner: {game_state.gameWinner}"
@@ -598,7 +813,7 @@ async def forward(self):
                     )
                 )
                 # End the game and remove from gameboard after 10 seconds
-                await update_room(self, game_state, roomId)
+                await update_room_codenames(self, game_state, roomId)
                 break
 
         # 2.3 Turn/Role-based game logic
@@ -678,7 +893,7 @@ async def forward(self):
                         if game_state.currentTeam == TeamColor.BLUE
                         else TeamColor.BLUE
                     )
-                    resetAnimations(self, game_state.cards)
+                    reset_animations_codenames(self, game_state.cards)
                     end_reason = "no_response"
                     bt.logging.info(
                         f"💀 Invalid clue provided! Game over. Winner: {game_state.gameWinner}"
@@ -692,7 +907,7 @@ async def forward(self):
                         )
                     )
                     # End the game and remove from gameboard after 10 seconds
-                    await update_room(self, game_state, roomId)
+                    await update_room_codenames(self, game_state, roomId)
                     break
 
             else:
@@ -733,7 +948,7 @@ async def forward(self):
                         if game_state.currentTeam == TeamColor.BLUE
                         else TeamColor.BLUE
                     )
-                    resetAnimations(self, game_state.cards)
+                    reset_animations_codenames(self, game_state.cards)
                     end_reason = "no_response"
                     bt.logging.info(
                         f"❌ No guesses received! Game over. Winner: {game_state.gameWinner}"
@@ -747,7 +962,7 @@ async def forward(self):
                             reasoning="No guesses provided.",
                         )
                     )
-                    await update_room(self, game_state, roomId)
+                    await update_room_codenames(self, game_state, roomId)
                     break
             else:
                 # Update the game state
@@ -783,7 +998,7 @@ async def forward(self):
 
                     if game_state.remainingRed == 0:
                         game_state.gameWinner = TeamColor.RED
-                        resetAnimations(self, game_state.cards)
+                        reset_animations_codenames(self, game_state.cards)
                         end_reason = "red_all_cards"
                         bt.logging.info(
                             f"🎉 All red cards found! Winner: {game_state.gameWinner}"
@@ -797,11 +1012,11 @@ async def forward(self):
                                 reasoning=reasoning,
                             )
                         )
-                        await update_room(self, game_state, roomId)
+                        await update_room_codenames(self, game_state, roomId)
                         break
                     elif game_state.remainingBlue == 0:
                         game_state.gameWinner = TeamColor.BLUE
-                        resetAnimations(self, game_state.cards)
+                        reset_animations_codenames(self, game_state.cards)
                         end_reason = "blue_all_cards"
                         bt.logging.info(
                             f"🎉 All blue cards found! Winner: {game_state.gameWinner}"
@@ -815,7 +1030,7 @@ async def forward(self):
                                 reasoning=reasoning,
                             )
                         )
-                        await update_room(self, game_state, roomId)
+                        await update_room_codenames(self, game_state, roomId)
                         break
 
                     if card.color == "assassin":
@@ -825,7 +1040,7 @@ async def forward(self):
                             if game_state.currentTeam == TeamColor.BLUE
                             else TeamColor.BLUE
                         )
-                        resetAnimations(self, game_state.cards)
+                        reset_animations_codenames(self, game_state.cards)
                         end_reason = "assassin"
                         bt.logging.info(
                             f"💀 Assassin card '{card.word}' found! Game over. Winner: {game_state.gameWinner}"
@@ -839,7 +1054,7 @@ async def forward(self):
                                 reasoning=reasoning,
                             )
                         )
-                        await update_room(self, game_state, roomId)
+                        await update_room_codenames(self, game_state, roomId)
                         break
 
                     if card.color != game_state.currentTeam.value:
@@ -873,7 +1088,7 @@ async def forward(self):
                 game_state.currentTeam = TeamColor.RED
         game_step += 1
 
-        await update_room(self, game_state, roomId)
+        await update_room_codenames(self, game_state, roomId)
 
     # Game over
     bt.logging.info("════════════════════════════════════════════════════════════════")
@@ -920,3 +1135,20 @@ async def forward(self):
         bt.logging.error(f"Failed to persist game score {roomId}: {err}")
 
     time.sleep(1)
+
+
+async def forward(self):
+    """
+    Validator dispatcher. Routes to competition-specific forward methods.
+    """
+    competition = self.current_competition
+
+    # Sync any pending score records to the database
+    await self.score_store.sync_scores_all()
+
+    if competition == Competition.TWENTYQ_COMPETITION:
+        await forward_twentyq(self)
+        return
+    else:
+        await forward_codenames(self)
+        return

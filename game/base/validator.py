@@ -76,7 +76,8 @@ class BaseValidatorNeuron(BaseNeuron):
         bt.logging.info("Building validation weights.")
         self.scores = np.zeros(self.metagraph.n, dtype=np.float32)
 
-        self.wandb_runs = [None, None]
+        # WandB runs per mechid: 0=clue, 1=guess, 2=twentyq
+        self.wandb_runs = [None, None, None]
         # Init sync with the network. Updates the metagraph.
         self.sync()
 
@@ -190,7 +191,7 @@ class BaseValidatorNeuron(BaseNeuron):
 
         self.init_db()
 
-        # Init wandb
+        # Init wandb (guarded for competitions without mechid)
         if self.config.wandb.off is False:
             bt.logging.info("Wandb logging is turned on.")
             bt.logging.info(
@@ -198,9 +199,20 @@ class BaseValidatorNeuron(BaseNeuron):
             )
 
             def _start_wandb_run():
-                if self.wandb_runs[competition.mechid]:
+                # If mechid is undefined (e.g., new competition), skip wandb run indexing
+                if competition.mechid is None:
+                    bt.logging.info(
+                        f"Skipping wandb run for {competition.value} (no mechid)."
+                    )
+                    return
+                existing = None
+                try:
+                    existing = self.wandb_runs[competition.mechid]
+                except Exception:
+                    existing = None
+                if existing:
                     try:
-                        self.wandb_runs[competition.mechid].finish()
+                        existing.finish()
                     except Exception as err:
                         bt.logging.warning(
                             f"Failed to finish existing Wandb run: {err}"
@@ -223,7 +235,8 @@ class BaseValidatorNeuron(BaseNeuron):
             _start_wandb_run()
         else:
             bt.logging.info("Wandb logging is turned off.")
-            self.wandb_runs[competition.mechid] = None
+            if competition.mechid is not None:
+                self.wandb_runs[competition.mechid] = None
 
         bt.logging.info(f"Starting {competition.value} validator main loop.")
 
@@ -271,7 +284,7 @@ class BaseValidatorNeuron(BaseNeuron):
             except KeyboardInterrupt:
                 self.axon.stop()
                 bt.logging.success("Validator killed by keyboard interrupt.")
-                for wandb_run in self.wandb_runs.values():
+                for wandb_run in self.wandb_runs:
                     if wandb_run:
                         wandb_run.finish()
                 exit()
@@ -395,6 +408,14 @@ class BaseValidatorNeuron(BaseNeuron):
         Sets the validator weights to the metagraph hotkeys based on the scores it has received from the miners. The weights determine the trust and incentive level the validator assigns to miner nodes on the network.
         """
 
+        # Skip weight setting for competitions without a mechid (e.g., 20Q until on-chain defined)
+        competition = self.current_competition
+        if competition.mechid is None:
+            bt.logging.info(
+                f"Skipping set_weights for {competition.value} (no mechid defined)."
+            )
+            return
+
         now = time.time()
         blocks_since_epoch = self.subtensor.get_subnet_info(
             self.config.netuid
@@ -415,7 +436,6 @@ class BaseValidatorNeuron(BaseNeuron):
             self._burn_weights()
             return
 
-        competition = self.current_competition
         weights = np.zeros(self.metagraph.n, dtype=np.float32)
         comp_value = competition.value
 

@@ -14,6 +14,7 @@ with open("game/utils/wordlist-eng.txt") as f:
 class Competition(Enum):
     CLUE_COMPETITION = "clue_competition"
     GUESS_COMPETITION = "guess_competition"
+    TWENTYQ_COMPETITION = "twentyq_competition"
 
     @property
     def mechid(self) -> int:
@@ -21,7 +22,8 @@ class Competition(Enum):
             return 0
         elif self == Competition.GUESS_COMPETITION:
             return 1
-        return None
+        elif self == Competition.TWENTYQ_COMPETITION:
+            return 2
 
 
 class TeamColor(Enum):

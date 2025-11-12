@@ -305,3 +305,111 @@ async def choose_players(
         )
 
     return selected, observer_hotkeys
+
+
+async def choose_many_players(
+    self,
+    competition: Competition,
+    k: int,
+    exclude: List[int] | None = None,
+) -> Tuple[List[int], List[str]]:
+    """Select up to ``k`` miners fairly for the given competition.
+
+    This generalizes selection beyond pairs by repeatedly sampling from the
+    fairness-filtered available pool while respecting stake and ping checks.
+    """
+
+    exclude_set = {int(uid) for uid in (exclude or [])}
+    exclude_set.update(
+        int(uid)
+        for uid in self.metagraph.uids
+        if self.metagraph.S[uid] < self.config.neuron.minimum_stake_requirement
+    )
+    uids_to_ping = [uid for uid in self.metagraph.uids if uid not in exclude_set]
+
+    ping_successful_uids, failed_uids = await ping_uids(
+        self.dendrite, self.metagraph, uids_to_ping, timeout=30
+    )
+    retry_successful_uids, _ = await ping_uids(
+        self.dendrite, self.metagraph, failed_uids, timeout=10
+    )
+    ping_successful_uids.extend(retry_successful_uids)
+    ping_successful_set = {int(uid) for uid in ping_successful_uids}
+
+    # Build fairness windows
+    window_seconds = self.scoring_window_seconds
+    window_scores = {}
+    self._local_counts_in_window = {}
+    self._global_counts_in_window = {}
+    try:
+        blocks_since_epoch = self.subtensor.get_subnet_info(
+            self.config.netuid
+        ).blocks_since_epoch
+        end_ts = int(
+            self.subtensor.get_timestamp().timestamp() + (360 - blocks_since_epoch) * 12
+        )
+        since_ts = end_ts - int(window_seconds)
+        window_scores, _, _ = self.score_store.window_average_scores_by_hotkey(
+            competition.value, since_ts, end_ts
+        )
+        self._local_counts_in_window, self._global_counts_in_window = (
+            self.score_store.records_in_window(
+                self.wallet.hotkey.ss58_address, competition.value, since_ts, end_ts
+            )
+        )
+        self._local_counts_in_epoch, self._global_counts_in_epoch = (
+            self.score_store.records_in_window(
+                self.wallet.hotkey.ss58_address,
+                competition.value,
+                (end_ts - (360 * 12)),
+                end_ts,
+            )
+        )
+    except Exception as err:  # noqa: BLE001
+        bt.logging.error(f"Failed to fetch window scores: {err}")
+        return [], []
+
+    # Exclude currently active miners for this competition
+    active_miners = await fetch_active_miners(self, competition)
+    active_miners_uids = [
+        int(uid)
+        for uid in self.metagraph.uids
+        if self.metagraph.hotkeys[uid] in active_miners
+    ]
+    bt.logging.info(f"Active miners uids: {active_miners_uids}")
+    exclude_set.update(uid for uid in active_miners_uids)
+
+    available_pool = make_available_pool(self, list(exclude_set))
+    selected: List[int] = []
+    observer_hotkeys: List[str] = []
+
+    while len(selected) < k and available_pool:
+        uid = available_pool.pop(0)
+        hotkey = self.metagraph.hotkeys[uid]
+        observer_hotkeys.append(hotkey)
+        exclude_set.add(uid)
+
+        if uid not in ping_successful_set:
+            available_pool = make_available_pool(self, list(exclude_set))
+            continue
+
+        score = float(window_scores.get(hotkey, 0.0))
+        if score < -1.0:
+            bt.logging.warning(f"UID {uid} has low score: {score}")
+            available_pool = make_available_pool(self, list(exclude_set))
+            continue
+
+        selected.append(uid)
+        observer_hotkeys.pop()  # remove from observers once selected
+        available_pool = make_available_pool(self, list(exclude_set))
+
+    if len(selected) < k:
+        bt.logging.warning(
+            f"Selected only {len(selected)} miner(s) out of requested {k}."
+        )
+    else:
+        bt.logging.info(
+            f"Selected miners: {selected}, selected counts: {[self._local_counts_in_window.get(self.metagraph.hotkeys[uid], 0) for uid in selected]}"
+        )
+
+    return selected, observer_hotkeys
