@@ -193,9 +193,6 @@ class BaseValidatorNeuron(BaseNeuron):
         # Init wandb
         if self.config.wandb.off is False:
             bt.logging.info("Wandb logging is turned on.")
-            bt.logging.info(
-                f"Initializing wandb with project name: {self.config.wandb.project_name}, entity: {self.config.wandb.entity}"
-            )
 
             def _start_wandb_run():
                 if self.wandb_runs[competition.mechid]:
@@ -205,8 +202,21 @@ class BaseValidatorNeuron(BaseNeuron):
                         bt.logging.warning(
                             f"Failed to finish existing Wandb run: {err}"
                         )
+                # Set wandb project name based on subtensor network
+                project_name = self.config.wandb.project_name
+                if (
+                    hasattr(self.config, "subtensor")
+                    and hasattr(self.config.subtensor, "network")
+                    and self.config.subtensor.network == "test"
+                    and project_name == "brainplay"
+                ):
+                    project_name = "testnet"
+
+                bt.logging.info(
+                    f"Initializing wandb with project name: {project_name}, entity: {self.config.wandb.entity}"
+                )
                 self.wandb_runs[competition.mechid] = wandb.init(
-                    project=self.config.wandb.project_name,
+                    project=project_name,
                     entity=self.config.wandb.entity,
                     name=f"{competition.value}-{self.wallet.hotkey.ss58_address[:6]}",
                 )
