@@ -587,7 +587,7 @@ async def forward(self):
                 resetAnimations(self, game_state.cards)
                 end_reason = "no_response"
                 bt.logging.info(
-                    f"💀 No response received! Game over. Winner: {game_state.gameWinner}"
+                    f"💀 No response received! Game over. Winner: {game_state.gameWinner} (Room ID: {roomId})"
                 )
                 game_state.chatHistory.append(
                     ChatMessage(
@@ -681,7 +681,7 @@ async def forward(self):
                     resetAnimations(self, game_state.cards)
                     end_reason = "no_response"
                     bt.logging.info(
-                        f"💀 Invalid clue provided! Game over. Winner: {game_state.gameWinner}"
+                        f"💀 Invalid clue provided! Game over. Winner: {game_state.gameWinner} (Room ID: {roomId})"
                     )
                     game_state.chatHistory.append(
                         ChatMessage(
@@ -736,7 +736,7 @@ async def forward(self):
                     resetAnimations(self, game_state.cards)
                     end_reason = "no_response"
                     bt.logging.info(
-                        f"❌ No guesses received! Game over. Winner: {game_state.gameWinner}"
+                        f"❌ No guesses received! Game over. Winner: {game_state.gameWinner} (Room ID: {roomId})"
                     )
                     game_state.chatHistory.append(
                         ChatMessage(
@@ -828,7 +828,7 @@ async def forward(self):
                         resetAnimations(self, game_state.cards)
                         end_reason = "assassin"
                         bt.logging.info(
-                            f"💀 Assassin card '{card.word}' found! Game over. Winner: {game_state.gameWinner}"
+                            f"💀 Assassin card '{card.word}' found! Game over. Winner: {game_state.gameWinner} (Room ID: {roomId})"
                         )
                         game_state.chatHistory.append(
                             ChatMessage(
@@ -878,7 +878,7 @@ async def forward(self):
     # Game over
     bt.logging.info("════════════════════════════════════════════════════════════════")
     bt.logging.info(
-        f"               🎉 GAME OVER 🏆 WINNER: {game_state.gameWinner.value.upper()} TEAM                "
+        f"               🎉 GAME OVER 🏆 WINNER: {game_state.gameWinner.value.upper()} TEAM (Room ID: {roomId})               "
     )
     bt.logging.info(
         "════════════════════════════════════════════════════════════════\n"
