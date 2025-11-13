@@ -42,7 +42,6 @@ from game.utils.game import (
 )
 from openai import OpenAI
 import os
-from game.validator.graceful_shutdown import get_shutdown_manager
 
 client = OpenAI(api_key=os.environ.get("OPENAI_KEY"))
 
@@ -356,12 +355,6 @@ async def forward(self):
         self (bittensor.neuron.Neuron): The neuron instance containing all necessary state information for the validator.
 
     """
-    # Check for graceful shutdown request before starting a new game
-    shutdown_manager = get_shutdown_manager()
-    if shutdown_manager.is_shutdown_requested():
-        bt.logging.info("Shutdown requested - skipping game creation")
-        return
-
     competition = self.current_competition
 
     # Sync any pending score records to the database
@@ -449,9 +442,6 @@ async def forward(self):
         return
 
     # ===============GAME LOOP=======================
-    # Mark game as active for graceful shutdown tracking
-    shutdown_manager.set_game_active(True)
-
     bt.logging.info("╔══════════════════════════════════════════════════════════════╗")
     bt.logging.info("║                     🚀  GAME STARTING  🚀                    ║")
     bt.logging.info(
@@ -888,15 +878,11 @@ async def forward(self):
     # Game over
     bt.logging.info("════════════════════════════════════════════════════════════════")
     bt.logging.info(
-        f"               🎉 GAME OVER 🏆 WINNER: {game_state.gameWinner.value.upper()} TEAM (Room ID: {roomId})                "
+        f"               🎉 GAME OVER 🏆 WINNER: {game_state.gameWinner.value.upper()} TEAM                "
     )
     bt.logging.info(
         "════════════════════════════════════════════════════════════════\n"
     )
-
-    # Mark game as inactive for graceful shutdown tracking
-    shutdown_manager.set_game_active(False)
-
     # Adjust the scores based on responses from miners.
     rewards = get_rewards(
         self,

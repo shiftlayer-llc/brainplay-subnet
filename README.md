@@ -159,6 +159,11 @@ Set up automatic updates that keep your validator current with the latest code:
    ```bash
    ./scripts/run_auto_validator.sh --wallet.name test_validator --wallet.hotkey h1 --netuid 117 --logging.info
    ```
+   or if you're using PM2
+
+   ```bash
+   pm2 start ./scripts/run_auto_validator.sh --name brainplay-auto-validator -- --wallet.name test_validator --wallet.hotkey h1 --netuid 117 --logging.info
+   ```
 
 **Benefits of Auto-Update**:
 - ✅ Automatically checks for updates every 5 minutes
