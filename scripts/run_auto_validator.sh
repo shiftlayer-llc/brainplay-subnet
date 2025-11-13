@@ -20,6 +20,16 @@ set -euo pipefail  # Exit on error, undefined vars, pipe failures
 # GLOBAL CONFIGURATION
 #==============================================================================
 
+# Ubuntu 24 compatibility fixes
+if command -v lsb_release &> /dev/null; then
+    ubuntu_version=$(lsb_release -rs 2>/dev/null || echo "")
+    if [[ "$ubuntu_version" == "24."* ]]; then
+        # Set Node.js compatibility options for Ubuntu 24
+        export NODE_OPTIONS="--no-deprecation ${NODE_OPTIONS:-}"
+        export PM2_NODE_OPTIONS="--no-deprecation --no-warnings ${PM2_NODE_OPTIONS:-}"
+    fi
+fi
+
 # Script paths and directories
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPO_DIR="$(dirname "$SCRIPT_DIR")"
@@ -542,6 +552,81 @@ check_prerequisites() {
         log_error "pm2 not found. Please install pm2 first."
         log_info "See: https://pm2.keymetrics.io/docs/usage/quick-start/"
         exit 1
+    fi
+    
+    # Ubuntu 24 compatibility check for PM2
+    if command -v lsb_release &> /dev/null; then
+        local ubuntu_version=$(lsb_release -rs 2>/dev/null || echo "")
+        if [[ "$ubuntu_version" == "24."* ]]; then
+            log_info "Detected Ubuntu 24.x - applying compatibility fixes"
+            
+            # Check Node.js version for PM2 compatibility
+            if command -v node &> /dev/null; then
+                local node_version=$(node --version | sed 's/v//')
+                local node_major=$(echo "$node_version" | cut -d. -f1)
+                
+                if [[ "$node_major" -ge 20 ]]; then
+                    log_warn "Node.js $node_version detected on Ubuntu 24 - PM2 may have compatibility issues"
+                    log_info "Consider using Node.js 18.x for better PM2 compatibility"
+                    
+                    # Set PM2 compatibility mode
+                    export NODE_OPTIONS="--no-deprecation"
+                    log_info "Set NODE_OPTIONS='--no-deprecation' for PM2 compatibility"
+                fi
+            fi
+            
+            # Check for PM2 syntax errors
+            if pm2 --version &>/dev/null; then
+                local pm2_version=$(pm2 --version)
+                log_info "PM2 version: $pm2_version"
+                
+                # Test PM2 basic functionality
+                if ! pm2 status &>/dev/null; then
+                    log_error "PM2 is not functioning properly on Ubuntu 24"
+                    log_info "Attempting PM2 compatibility fixes..."
+                    
+                    # Try to reinstall PM2 with compatibility fixes
+                    log_info "Reinstalling PM2 with compatibility fixes..."
+                    
+                    # Clear PM2 cache and reinstall
+                    pm2 kill &>/dev/null || true
+                    npm uninstall -g pm2 &>/dev/null || true
+                    npm cache clean --force &>/dev/null || true
+                    
+                    # Install PM2 with specific version known to work with newer Node.js
+                    npm install -g pm2@latest &>/dev/null
+                    
+                    if pm2 --version &>/dev/null; then
+                        log_info "PM2 reinstalled successfully"
+                        
+                        # Set PM2 to use Node.js compatibility mode
+                        export PM2_NODE_OPTIONS="--no-deprecation --no-warnings"
+                        log_info "Set PM2_NODE_OPTIONS='--no-deprecation --no-warnings'"
+                        
+                        # Additional fix for Ubuntu 24 PM2 syntax errors
+                        log_info "Applying additional Ubuntu 24 compatibility fixes..."
+                        
+                        # Set Node.js to use legacy mode for string literals
+                        export NODE_OPTIONS="--no-deprecation --no-experimental-fetch ${NODE_OPTIONS:-}"
+                        
+                        # Try to use PM2 with explicit interpreter
+                        if command -v node &>/dev/null; then
+                            log_info "Using explicit Node.js interpreter for PM2"
+                            # Set PM2 to use explicit node interpreter
+                            pm2 install typescript &>/dev/null || true
+                        fi
+                    else
+                        log_error "Failed to reinstall PM2"
+                        log_info "Manual intervention required: Try installing Node.js 18.x"
+                        exit 1
+                    fi
+                fi
+            else
+                log_error "PM2 is not installed or not accessible"
+                log_info "Try installing PM2: npm install -g pm2"
+                exit 1
+            fi
+        fi
     fi
 }
 

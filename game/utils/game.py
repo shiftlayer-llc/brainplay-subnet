@@ -97,6 +97,7 @@ class GameState:
         rng = random.Random(int(self.seed, 16))
 
         self.words = rng.sample(words, 25)
+        rng.shuffle(self.words)
         self.cards = [
             CardType(
                 word=word.strip(),
