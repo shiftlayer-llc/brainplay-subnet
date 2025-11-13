@@ -96,7 +96,8 @@ class GameState:
         self.seed = hashlib.sha256(seed_source.encode("utf-8")).hexdigest()
         rng = random.Random(int(self.seed, 16))
 
-        self.words = rng.shuffle(rng.sample(words, 25))
+        self.words = rng.sample(words, 25)
+        rng.shuffle(self.words)
         self.cards = [
             CardType(
                 word=word.strip(),
