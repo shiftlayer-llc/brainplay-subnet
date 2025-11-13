@@ -156,7 +156,11 @@ async def update_room(self, game_state: GameState, roomId):
                 "cards": [
                     {
                         "word": card.word,
-                        "color": card.color,
+                        "color": (
+                            card.color
+                            if (game_state.gameWinner or card.is_revealed)
+                            else "-"
+                        ),
                         "isRevealed": card.is_revealed,
                         "wasRecentlyRevealed": card.was_recently_revealed,
                     }
@@ -167,7 +171,7 @@ async def update_room(self, game_state: GameState, roomId):
                         "sender": msg.sender.value,
                         "message": msg.message,
                         "team": msg.team.value,
-                        "reasoning": msg.reasoning,
+                        "reasoning": (msg.reasoning if game_state.gameWinner else "-"),
                         "clueText": msg.clueText,
                         "number": msg.number,
                         "guesses": msg.guesses,
