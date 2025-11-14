@@ -6,6 +6,7 @@ from enum import Enum
 from typing import NamedTuple
 
 from pydantic import BaseModel
+import secrets, hashlib, random
 
 with open("game/utils/wordlist-eng.txt") as f:
     words = f.readlines()
@@ -93,8 +94,9 @@ class GameState:
         self.participants = participants
         seed_source = str(time.time_ns())
         # Seed a dedicated RNG per game so the board stays consistent for the game lifetime.
-        self.seed = hashlib.sha256(seed_source.encode("utf-8")).hexdigest()
-        rng = random.Random(int(self.seed, 16))
+        seed_source = secrets.token_hex(32)  # random 64-char hex string from OS RNG
+        seed_hex = hashlib.sha256(seed_source.encode()).hexdigest()
+        rng = random.Random(int(seed_hex, 16))
 
         self.words = rng.sample(words, 25)
         rng.shuffle(self.words)
