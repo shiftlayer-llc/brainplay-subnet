@@ -92,7 +92,6 @@ class GameState:
     def __init__(self, competition, participants, seed: str | int | None = None):
         self.competition = competition
         self.participants = participants
-        seed_source = str(time.time_ns())
         # Seed a dedicated RNG per game so the board stays consistent for the game lifetime.
         seed_source = secrets.token_hex(32)  # random 64-char hex string from OS RNG
         seed_hex = hashlib.sha256(seed_source.encode()).hexdigest()
