@@ -263,12 +263,13 @@ async def remove_room(self, roomId):
 
 async def get_llm_response(synapse: GameSynapse) -> GameSynapseOutput:
 
-    async def get_gpt5_response(messages, effort="minimal"):
+    async def get_gpt5_response(messages, effort="low"):
         try:
             result = client.responses.create(
-                model="gpt-5",
+                model="gpt-5.1",
                 input=messages,
                 reasoning={"effort": effort},  # Optional: control reasoning effort
+                text={"verbosity": "low"},
             )
             return result.output_text
         except Exception as e:
@@ -627,9 +628,10 @@ async def forward(self):
 
                 try:
                     result = client.responses.create(
-                        model="gpt-5",
+                        model="gpt-5.1",
                         input=messages,
                         reasoning={"effort": "medium"},
+                        text={"verbosity": "low"},
                     )
                     result_json = json.loads(result.output_text)
                     if result_json.get("valid") is False:
