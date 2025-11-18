@@ -136,11 +136,10 @@ class Miner(BaseMinerNeuron):
             try:
                 client = OpenAI(api_key=os.environ.get("OPENAI_KEY"))
                 result = client.responses.create(
-                    model="gpt-5",
+                    model="gpt-5.1",
                     input=messages,
-                    reasoning={
-                        "effort": "minimal"
-                    },  # Optional: control reasoning effort
+                    reasoning={"effort": "low"},  # Optional: control reasoning effort
+                    text={"verbosity": "low"},
                 )
                 return result.output_text
             except Exception as e:
