@@ -719,7 +719,7 @@ async def forward(self):
             reasoning = response.reasoning
             bt.logging.info(f"Guessed cards: {guesses}")
             # bt.logging.info(f"Reasoning: {reasoning}")
-            if guesses is None:
+            if guesses is None or len(guesses) == 0:
                 invalid_respond_counts[to_uid] += 1
                 bt.logging.info(f"⚠️ No guesses '{guesses}' provided by miner {to_uid}.")
                 if invalid_respond_counts[to_uid] < 2:
