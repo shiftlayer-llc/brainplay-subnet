@@ -18,7 +18,6 @@
 
 import asyncio
 import time
-import uuid
 import bittensor as bt
 import aiohttp
 import json
@@ -28,14 +27,12 @@ from game.utils.spySysPrompt import spySysPrompt
 from game.utils.ruleSysPrompt import ruleSysPrompt
 from game.validator.reward import get_rewards
 from game.utils.uids import choose_players
-import random
 import typing
 from game.utils.game import Competition, TParticipant
 from game.utils.game import (
     GameState,
     Role,
     TeamColor,
-    CardColor,
     CardType,
     Clue,
     ChatMessage,
@@ -171,7 +168,7 @@ async def update_room(self, game_state: GameState, roomId):
                         "sender": msg.sender.value,
                         "message": msg.message,
                         "team": msg.team.value,
-                        "reasoning": (msg.reasoning if game_state.gameWinner else "-"),
+                        "reasoning": msg.reasoning,
                         "clueText": msg.clueText,
                         "number": msg.number,
                         "guesses": msg.guesses,
@@ -211,7 +208,6 @@ async def update_room(self, game_state: GameState, roomId):
                     }
                     for p in game_state.participants
                 ],
-                # "createdAt": "2025-04-07T17:49:16.457Z"
             }
             headers = self.build_signed_headers()
             async with session.patch(
@@ -237,11 +233,6 @@ async def remove_room(self, roomId):
     endpoint = f"{self.backend_base}/api/v1/rooms/{roomId}"
     try:
         async with aiohttp.ClientSession() as session:
-            payload = {
-                "validatorKey": self.wallet.hotkey.ss58_address,
-                "roomId": roomId,
-                "action": "delete_room",
-            }
             headers = self.build_signed_headers()
             async with session.delete(
                 endpoint, headers=headers, timeout=10
@@ -318,13 +309,10 @@ async def get_llm_response(synapse: GameSynapse) -> GameSynapseOutput:
 
     retry = 0
     while retry < 2:
-        response_str = await get_gpt5_response(
-            messages
-        )  # , effort = "medium" if synapse.your_role == "spymaster" else "minimal")
+        response_str = await get_gpt5_response(messages)
         if response_str:
             break
         retry += 1
-    # bt.logging.debug(f"💬 LLM Response: {response_str}")
     response_dict = json.loads(response_str)
     if "clue" in response_dict:
         clue = response_dict["clue"]
@@ -718,7 +706,6 @@ async def forward(self):
             guesses = response.guesses
             reasoning = response.reasoning
             bt.logging.info(f"Guessed cards: {guesses}")
-            # bt.logging.info(f"Reasoning: {reasoning}")
             if guesses is None or len(guesses) == 0:
                 invalid_respond_counts[to_uid] += 1
                 bt.logging.info(f"⚠️ No guesses '{guesses}' provided by miner {to_uid}.")
