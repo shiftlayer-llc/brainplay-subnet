@@ -602,7 +602,7 @@ async def forward(self):
             reasoning = response.reasoning
 
             async def check_valid_clue(clue, number, board_words):
-                if clue is None or number is None:
+                if clue is None or number is None or number <= 0:
                     return False, "Clue or number is None"
 
                 messages = []
@@ -706,7 +706,7 @@ async def forward(self):
             guesses = response.guesses
             reasoning = response.reasoning
             bt.logging.info(f"Guessed cards: {guesses}")
-            if guesses is None or len(guesses) == 0:
+            if is_miner_turn and (guesses is None or len(guesses) == 0):
                 invalid_respond_counts[to_uid] += 1
                 bt.logging.info(f"⚠️ No guesses '{guesses}' provided by miner {to_uid}.")
                 if invalid_respond_counts[to_uid] < 2:
