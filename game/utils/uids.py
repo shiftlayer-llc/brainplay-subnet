@@ -312,5 +312,5 @@ async def choose_players(
         bt.logging.info(
             f"Selected miners: {selected}, selected counts: {[self._local_counts_in_window.get(self.metagraph.hotkeys[uid], 0) for uid in selected]}"
         )
-
+    random.shuffle(selected)
     return selected, observer_hotkeys
