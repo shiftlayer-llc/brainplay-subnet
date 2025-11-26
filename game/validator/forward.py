@@ -425,6 +425,7 @@ async def forward(self):
     started_at = time.time()
     game_state = GameState(competition=competition, participants=participants)
     end_reason = "completed"
+    MAX_GAME_STEPS = 50
 
     # Create new room via API call
     # ===============🤞ROOM CREATE===================
@@ -443,7 +444,7 @@ async def forward(self):
     bt.logging.info(
         "╚══════════════════════════════════════════════════════════════╝\n"
     )
-    while game_state.gameWinner is None:
+    while game_state.gameWinner is None and game_step < MAX_GAME_STEPS:
         bt.logging.info("=" * 50)
         bt.logging.info(f"Game step {game_step + 1}")
 
@@ -874,6 +875,10 @@ async def forward(self):
         game_step += 1
 
         await update_room(self, game_state, roomId)
+
+    if game_step >= MAX_GAME_STEPS:
+        bt.logging.info(f"Maximum game steps reached ({game_step}). Game over!")
+        return
 
     # Game over
     bt.logging.info("════════════════════════════════════════════════════════════════")
