@@ -763,7 +763,14 @@ async def forward(self):
                     )
                 )
                 for guess in guesses:
-                    card = next((c for c in game_state.cards if c.word == guess), None)
+                    card = next(
+                        (
+                            c
+                            for c in game_state.cards
+                            if c.word.lower() == guess.lower()
+                        ),
+                        None,
+                    )
                     if card is None or card.is_revealed:
                         bt.logging.debug(f"Invalid guess: {guess}")
                         continue
