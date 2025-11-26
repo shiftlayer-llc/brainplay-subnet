@@ -267,6 +267,11 @@ async def choose_players(
         bt.logging.error("No available miners could be selected.")
         return [], []
 
+    selected.sort(
+        key=lambda uid: window_scores.get(self.metagraph.hotkeys[uid], 0.0),
+        reverse=True,
+    )
+
     first_hotkey = self.metagraph.hotkeys[selected[0]]
     # Step 2: Select second player (who has closest score to first player):
     retry_count = 0
@@ -307,5 +312,5 @@ async def choose_players(
         bt.logging.info(
             f"Selected miners: {selected}, selected counts: {[self._local_counts_in_window.get(self.metagraph.hotkeys[uid], 0) for uid in selected]}"
         )
-
+    random.shuffle(selected)
     return selected, observer_hotkeys

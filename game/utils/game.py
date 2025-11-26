@@ -8,8 +8,12 @@ from typing import NamedTuple
 from pydantic import BaseModel
 import secrets, hashlib, random
 
-with open("game/utils/wordlist-eng.txt") as f:
-    words = f.readlines()
+word_files = [
+    "game/data/words/default.txt",
+    "game/data/words/duet.txt",
+    "game/data/words/thegamegal.txt",
+    "game/data/words/undercover.txt",
+]
 
 
 class Competition(Enum):
@@ -96,7 +100,8 @@ class GameState:
         seed_source = secrets.token_hex(32)  # random 64-char hex string from OS RNG
         seed_hex = hashlib.sha256(seed_source.encode()).hexdigest()
         rng = random.Random(int(seed_hex, 16))
-
+        with open(rng.choice(word_files)) as f:
+            words = f.readlines()
         self.words = rng.sample(words, 25)
         rng.shuffle(self.words)
         self.cards = [
