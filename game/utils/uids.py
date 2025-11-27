@@ -246,6 +246,7 @@ async def choose_players(
             exclude_set.add(uid)
 
             if uid not in ping_successful_set:
+                bt.logging.warning(f"UID {uid} is not in successful ping set")
                 continue
 
             score = float(window_scores.get(hotkey, 0.0))
