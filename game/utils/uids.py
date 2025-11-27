@@ -104,6 +104,8 @@ def make_available_pool_for_second_player(self, exclude: List[int] = None) -> Li
             for uid in available_pool
         ]
     )
+    if minimum_local_count > 2:
+        return []
     available_pool = [
         uid
         for uid in available_pool

@@ -156,6 +156,7 @@ async def update_room(self, game_state: GameState, roomId):
                         "color": (
                             card.color
                             if (game_state.gameWinner or card.is_revealed)
+                            or game_state.competition == Competition.CLUE_COMPETITION
                             else "-"
                         ),
                         "isRevealed": card.is_revealed,
