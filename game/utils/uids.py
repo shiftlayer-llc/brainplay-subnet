@@ -104,8 +104,6 @@ def make_available_pool_for_second_player(self, exclude: List[int] = None) -> Li
             for uid in available_pool
         ]
     )
-    if minimum_local_count > 2:
-        return []
     available_pool = [
         uid
         for uid in available_pool
@@ -269,17 +267,13 @@ async def choose_players(
         bt.logging.error("No available miners could be selected.")
         return [], []
 
-    selected.sort(
-        key=lambda uid: window_scores.get(self.metagraph.hotkeys[uid], 0.0),
-        reverse=True,
-    )
-
     first_hotkey = self.metagraph.hotkeys[selected[0]]
     # Step 2: Select second player (who has closest score to first player):
-    retry_count = 0
-    while len(selected) < k and retry_count < 3:
-        retry_count += 1
+    while len(selected) < k:
         available_pool = make_available_pool_for_second_player(self, list(exclude_set))
+        if not available_pool:
+            bt.logging.warning("No available miners left to select from.")
+            break
         # Sort available pool by score distance to first selected player
         available_pool.sort(
             key=lambda uid: abs(
