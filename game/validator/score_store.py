@@ -286,6 +286,38 @@ class ScoreStore:
             {hotkey: int(count) for hotkey, count in global_rows},
         )
 
+    def observer_records_in_window(
+        self, competition: str, since_ts: float, end_ts: float
+    ) -> Dict[str, int]:
+        """Return counts of games where each hotkey participated only as an observer.
+
+        A miner is treated as an observer in a game if:
+        - They appear in ``miner_records`` for that room/competition, and
+        - Their hotkey is not one of the four main player roles (rs, ro, bs, bo) in ``scores_all``.
+        """
+
+        with self._lock:
+            cur = self.conn.cursor()
+            cur.execute(
+                """
+                SELECT mr.hotkey, COUNT(*)
+                FROM miner_records AS mr
+                JOIN scores_all AS sa
+                    ON mr.room_id = sa.room_id
+                WHERE
+                    mr.ts >= ? AND mr.ts < ?
+                    AND mr.competition = ?
+                    AND sa.competition = mr.competition
+                    AND mr.hotkey NOT IN (sa.rs, sa.ro, sa.bs, sa.bo)
+                GROUP BY mr.hotkey
+                """,
+                (int(since_ts), int(end_ts), competition),
+            )
+            rows = cur.fetchall()
+            cur.close()
+
+        return {hotkey: int(count) for hotkey, count in rows}
+
     def max_scores_all_id(self) -> int:
         with self._lock:
             cur = self.conn.cursor()

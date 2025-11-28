@@ -442,6 +442,9 @@ class BaseValidatorNeuron(BaseNeuron):
                 comp_value, since_ts, end_ts
             )
         )
+        observer_counts = self.score_store.observer_records_in_window(
+            comp_value, since_ts, end_ts
+        )
         hotkeys_with_minimum_stake = [
             self.metagraph.hotkeys[uid]
             for uid in range(self.metagraph.n)
@@ -455,6 +458,11 @@ class BaseValidatorNeuron(BaseNeuron):
         counts = {
             hotkey: count
             for hotkey, count in counts.items()
+            if hotkey in hotkeys_with_minimum_stake
+        }
+        observer_counts = {
+            hotkey: count
+            for hotkey, count in observer_counts.items()
             if hotkey in hotkeys_with_minimum_stake
         }
         total_scores = {
@@ -539,6 +547,7 @@ class BaseValidatorNeuron(BaseNeuron):
             total_scores=total_scores,
             avg_scores_by_uid=avg_scores_by_uid,
             record_count_limit=record_count_limit,
+            observer_counts=observer_counts,
         )
 
         norm = np.linalg.norm(weights, ord=1, axis=0, keepdims=True)
@@ -559,6 +568,7 @@ class BaseValidatorNeuron(BaseNeuron):
         total_scores: dict,
         avg_scores_by_uid: dict,
         record_count_limit: int,
+        observer_counts: dict,
     ) -> None:
         """Log competition scores as a table with win-rate based ordering."""
         table_rows = []
@@ -568,6 +578,7 @@ class BaseValidatorNeuron(BaseNeuron):
             games_played = int(counts.get(hotkey, 0))
             total_wins = float(total_scores.get(hotkey, 0.0))
             win_rate_value = float(avg_scores_by_uid.get(uid, 0.0))
+            observer_games = int(observer_counts.get(hotkey, 0))
             table_rows.append(
                 {
                     "uid": uid,
@@ -575,6 +586,7 @@ class BaseValidatorNeuron(BaseNeuron):
                     "games": games_played,
                     "wins": total_wins,
                     "win_rate": win_rate_value,
+                    "observer_games": observer_games,
                     "below_limit": games_played < record_count_limit,
                 }
             )
@@ -596,6 +608,7 @@ class BaseValidatorNeuron(BaseNeuron):
             "Games Played",
             "Score(Wins)",
             "Win Rate",
+            "Observer Games",
         ]
         table_data = [headers]
         for rank, row in enumerate(ordered_rows, start=1):
@@ -613,6 +626,7 @@ class BaseValidatorNeuron(BaseNeuron):
                     str(row["games"]),
                     wins_str,
                     f"{row['win_rate'] * 100:.2f}%",
+                    str(row["observer_games"]),
                 ]
             )
 
