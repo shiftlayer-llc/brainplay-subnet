@@ -22,9 +22,7 @@ import bittensor as bt
 import aiohttp
 import json
 from game.protocol import GameChatMessage, GameSynapse, GameSynapseOutput
-from game.utils.opSysPrompt import opSysPrompt
-from game.utils.spySysPrompt import spySysPrompt
-from game.utils.ruleSysPrompt import ruleSysPrompt
+from game.utils.prompt_loader import get_op_sys_prompt, get_spy_sys_prompt, get_rule_sys_prompt
 from game.validator.reward import get_rewards
 from game.utils.uids import choose_players
 import typing
@@ -302,7 +300,7 @@ async def get_llm_response(synapse: GameSynapse) -> GameSynapseOutput:
         {
             "role": "system",
             "content": (
-                spySysPrompt if synapse.your_role == "spymaster" else opSysPrompt
+                get_spy_sys_prompt() if synapse.your_role == "spymaster" else get_op_sys_prompt()
             ),
         }
     )
@@ -600,7 +598,7 @@ async def forward(self):
                     return False, "Clue or number is None"
 
                 messages = []
-                messages.append({"role": "system", "content": ruleSysPrompt})
+                messages.append({"role": "system", "content": get_rule_sys_prompt()})
                 messages.append(
                     {
                         "role": "user",
