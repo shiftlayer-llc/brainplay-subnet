@@ -36,17 +36,72 @@ class ScoreStore:
 
     @property
     def conn(self) -> sqlite3.Connection:
+        """
+        Get database connection with automatic recovery on failure.
+        
+        Returns:
+            SQLite connection object
+            
+        Raises:
+            sqlite3.Error: If connection cannot be established after retries
+        """
         if self._conn is None:
             with self._lock:
                 if self._conn is None:
-                    self._conn = sqlite3.connect(
-                        self.db_path,
-                        isolation_level=None,
-                        check_same_thread=False,
-                    )
-                    self._conn.execute("PRAGMA journal_mode=WAL;")
-                    self._conn.execute("PRAGMA synchronous=NORMAL;")
+                    self._conn = self._create_connection()
+        else:
+            # Test connection health
+            try:
+                self._conn.execute("SELECT 1").fetchone()
+            except sqlite3.Error:
+                bt.logging.warning("Database connection lost. Reconnecting...")
+                try:
+                    self._conn.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                self._conn = None
+                with self._lock:
+                    if self._conn is None:
+                        self._conn = self._create_connection()
         return self._conn
+
+    def _create_connection(self) -> sqlite3.Connection:
+        """
+        Create a new database connection with retry logic.
+        
+        Returns:
+            SQLite connection object
+            
+        Raises:
+            sqlite3.Error: If connection cannot be established
+        """
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                conn = sqlite3.connect(
+                    self.db_path,
+                    isolation_level=None,
+                    check_same_thread=False,
+                    timeout=10.0,  # 10 second timeout for operations
+                )
+                conn.execute("PRAGMA journal_mode=WAL;")
+                conn.execute("PRAGMA synchronous=NORMAL;")
+                conn.execute("PRAGMA busy_timeout=10000;")  # 10 second busy timeout
+                bt.logging.info(f"Database connection established: {self.db_path}")
+                return conn
+            except sqlite3.Error as e:
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt  # Exponential backoff
+                    bt.logging.warning(
+                        f"Database connection failed (attempt {attempt + 1}/{max_retries}): {e}. "
+                        f"Retrying in {wait_time}s..."
+                    )
+                    time.sleep(wait_time)
+                else:
+                    bt.logging.error(
+                        f"Failed to establish database connection after {max_retries} attempts: {e}"
+                    )
+                    raise
 
     def init(self):
         cur = self.conn.cursor()
@@ -598,9 +653,13 @@ class ScoreStore:
             cur.close()
 
     def close(self):
+        """Close database connection gracefully."""
         with self._lock:
             if self._conn is not None:
                 try:
                     self._conn.close()
+                    bt.logging.info("Database connection closed")
+                except Exception as e:  # noqa: BLE001
+                    bt.logging.warning(f"Error closing database connection: {e}")
                 finally:
                     self._conn = None

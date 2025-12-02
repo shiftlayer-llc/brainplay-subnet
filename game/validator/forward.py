@@ -27,6 +27,7 @@ from game.utils.spySysPrompt import spySysPrompt
 from game.utils.ruleSysPrompt import ruleSysPrompt
 from game.validator.reward import get_rewards
 from game.utils.uids import choose_players
+from game.utils.retry import retry_with_exponential_backoff, CircuitBreaker
 import typing
 from game.utils.game import Competition, TParticipant
 from game.utils.game import (
@@ -38,9 +39,28 @@ from game.utils.game import (
     ChatMessage,
 )
 from openai import OpenAI
+from openai import (
+    RateLimitError,
+    APIConnectionError,
+    APIStatusError,
+    APITimeoutError,
+    AuthenticationError,
+)
 import os
 
 client = OpenAI(api_key=os.environ.get("OPENAI_KEY"))
+
+# Circuit breakers for external services
+llm_circuit_breaker = CircuitBreaker(
+    failure_threshold=5,
+    recovery_timeout=120.0,
+    expected_exception=Exception,
+)
+api_circuit_breaker = CircuitBreaker(
+    failure_threshold=5,
+    recovery_timeout=60.0,
+    expected_exception=Exception,
+)
 
 
 def organize_team(self, competition, uids):
@@ -74,203 +94,342 @@ def resetAnimations(self, cards):
         card.was_recently_revealed = False
 
 
+@retry_with_exponential_backoff(
+    max_retries=3,
+    initial_delay=1.0,
+    max_delay=10.0,
+    exponential_base=2.0,
+    retryable_exceptions=(aiohttp.ClientError, asyncio.TimeoutError, Exception),
+)
+async def _create_room_request(self, endpoint: str, payload: dict, headers: dict):
+    """Internal function to make room creation request with retry logic."""
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            endpoint, json=payload, headers=headers, timeout=15
+        ) as response:
+            if response.status == 200:
+                response_text = await response.text()
+                try:
+                    room_id = json.loads(response_text)["data"]["id"]
+                    bt.logging.info(f"Room created successfully. Room ID: {room_id}")
+                    bt.logging.debug(f"Room creation response: {response_text}")
+                    return room_id
+                except (json.JSONDecodeError, KeyError) as e:
+                    bt.logging.error(
+                        f"Failed to parse room creation response: {e}. "
+                        f"Response: {response_text[:200]}"
+                    )
+                    raise ValueError(f"Invalid response format: {e}") from e
+            else:
+                text = await response.text()
+                error_msg = (
+                    f"Failed to create room: HTTP {response.status} - {text[:200]}"
+                )
+                bt.logging.error(error_msg)
+                raise aiohttp.ClientResponseError(
+                    request_info=response.request_info,
+                    history=response.history,
+                    status=response.status,
+                    message=error_msg,
+                )
+
+
 async def create_room(self, game_state: GameState):
+    """
+    Create a new game room via API with retry logic and circuit breaker.
+
+    Args:
+        game_state: Current game state
+
+    Returns:
+        Room ID string if successful, None otherwise
+    """
     endpoint = f"{self.backend_base}/api/v1/rooms/create"
     try:
-        async with aiohttp.ClientSession() as session:
-            payload = {
-                "validatorKey": self.wallet.hotkey.ss58_address,
-                "competition": game_state.competition.value,
-                "cards": [
-                    {
-                        "word": card.word,
-                        "color": card.color,
-                        "isRevealed": card.is_revealed,
-                        "wasRecentlyRevealed": card.was_recently_revealed,
-                    }
-                    for card in game_state.cards
-                ],
-                "chatHistory": [],  # Game just started, no chat history yet
-                "currentTeam": game_state.currentTeam.value,
-                "currentRole": game_state.currentRole.value,
-                "previousTeam": None,  # Game just started, no previous team
-                "previousRole": None,  # Game just started, no previous role
-                "remainingRed": game_state.remainingRed,
-                "remainingBlue": game_state.remainingBlue,
-                "currentClue": None,  # Game just started, no current clue
-                "currentGuesses": [],  # Game just started, no guesses yet
-                "gameWinner": None,  # Game just started, no winner
-                "participants": [
-                    {
-                        "name": p.name,
-                        "hotkey": p.hotkey,
-                        "team": p.team.value,
-                        "role": p.role.value,
-                    }
-                    for p in game_state.participants
-                ],
-            }
-            headers = self.build_signed_headers()
-            async with session.post(
-                endpoint, json=payload, headers=headers, timeout=10
-            ) as response:
-                if response.status != 200:
-                    text = await response.text()
-                    bt.logging.error(
-                        f"Failed to create new room: HTTP {response.status} - {text}"
-                    )
-                    return None
-                else:
-                    response_text = await response.text()
-                    try:
-                        room_id = json.loads(response_text)["data"]["id"]
-                        bt.logging.info(
-                            f"Room created successfully. Room ID: {room_id}"
-                        )
-                        bt.logging.debug(f"Room creation response: {response_text}")
-                        return room_id
-                    except (json.JSONDecodeError, KeyError) as e:
-                        bt.logging.error(f"Failed to parse room creation response: {e}")
-                        return None
-    except aiohttp.ClientError as e:
-        bt.logging.error(f"Network error creating room: {e}")
-        return None
-    except asyncio.TimeoutError:
-        bt.logging.error(f"Timeout error creating room at {endpoint}")
-        return None
+        payload = {
+            "validatorKey": self.wallet.hotkey.ss58_address,
+            "competition": game_state.competition.value,
+            "cards": [
+                {
+                    "word": card.word,
+                    "color": card.color,
+                    "isRevealed": card.is_revealed,
+                    "wasRecentlyRevealed": card.was_recently_revealed,
+                }
+                for card in game_state.cards
+            ],
+            "chatHistory": [],  # Game just started, no chat history yet
+            "currentTeam": game_state.currentTeam.value,
+            "currentRole": game_state.currentRole.value,
+            "previousTeam": None,  # Game just started, no previous team
+            "previousRole": None,  # Game just started, no previous role
+            "remainingRed": game_state.remainingRed,
+            "remainingBlue": game_state.remainingBlue,
+            "currentClue": None,  # Game just started, no current clue
+            "currentGuesses": [],  # Game just started, no guesses yet
+            "gameWinner": None,  # Game just started, no winner
+            "participants": [
+                {
+                    "name": p.name,
+                    "hotkey": p.hotkey,
+                    "team": p.team.value,
+                    "role": p.role.value,
+                }
+                for p in game_state.participants
+            ],
+        }
+        headers = self.build_signed_headers()
+        
+        room_id = await api_circuit_breaker.call(
+            _create_room_request, self, endpoint, payload, headers
+        )
+        return room_id
     except Exception as e:
-        bt.logging.error(f"Unexpected error creating room: {e}")
+        bt.logging.error(
+            f"Failed to create room after retries: {e}. "
+            f"Competition: {game_state.competition.value}, "
+            f"Participants: {len(game_state.participants)}"
+        )
         return None
+
+
+@retry_with_exponential_backoff(
+    max_retries=2,
+    initial_delay=0.5,
+    max_delay=5.0,
+    exponential_base=2.0,
+    retryable_exceptions=(aiohttp.ClientError, asyncio.TimeoutError),
+)
+async def _update_room_request(self, endpoint: str, payload: dict, headers: dict):
+    """Internal function to make room update request with retry logic."""
+    async with aiohttp.ClientSession() as session:
+        async with session.patch(
+            endpoint, json=payload, headers=headers, timeout=15
+        ) as response:
+            if response.status == 200:
+                bt.logging.debug("Room state updated successfully")
+                return True
+            else:
+                response_text = await response.text()
+                error_msg = (
+                    f"Failed to update room: HTTP {response.status} - {response_text[:200]}"
+                )
+                bt.logging.warning(error_msg)
+                raise aiohttp.ClientResponseError(
+                    request_info=response.request_info,
+                    history=response.history,
+                    status=response.status,
+                    message=error_msg,
+                )
 
 
 async def update_room(self, game_state: GameState, roomId):
+    """
+    Update game room state via API with retry logic.
+
+    Args:
+        game_state: Current game state
+        roomId: Room ID to update
+    """
     endpoint = f"{self.backend_base}/api/v1/rooms/{roomId}"
     try:
-        async with aiohttp.ClientSession() as session:
-            payload = {
-                "competition": game_state.competition.value,
-                "validatorKey": self.wallet.hotkey.ss58_address,
-                "cards": [
-                    {
-                        "word": card.word,
-                        "color": (
-                            card.color
-                            if (game_state.gameWinner or card.is_revealed)
-                            or game_state.competition == Competition.CLUE_COMPETITION
-                            else "-"
-                        ),
-                        "isRevealed": card.is_revealed,
-                        "wasRecentlyRevealed": card.was_recently_revealed,
-                    }
-                    for card in game_state.cards
-                ],
-                "chatHistory": [
-                    {
-                        "sender": msg.sender.value,
-                        "message": msg.message,
-                        "team": msg.team.value,
-                        "reasoning": msg.reasoning,
-                        "clueText": msg.clueText,
-                        "number": msg.number,
-                        "guesses": msg.guesses,
-                    }
-                    for msg in game_state.chatHistory
-                ],
-                "currentTeam": game_state.currentTeam.value,
-                "currentRole": game_state.currentRole.value,
-                "previousTeam": (
-                    game_state.previousTeam.value if game_state.previousTeam else None
-                ),
-                "previousRole": (
-                    game_state.previousRole.value if game_state.previousRole else None
-                ),
-                "remainingRed": game_state.remainingRed,
-                "remainingBlue": game_state.remainingBlue,
-                "currentClue": (
-                    {
-                        "clueText": game_state.currentClue.clueText,
-                        "number": game_state.currentClue.number,
-                    }
-                    if game_state.currentClue
-                    else None
-                ),
-                "currentGuesses": (
-                    game_state.currentGuesses if game_state.currentGuesses else []
-                ),
-                "gameWinner": (
-                    game_state.gameWinner.value if game_state.gameWinner else None
-                ),
-                "participants": [
-                    {
-                        "name": p.name,
-                        "hotkey": p.hotkey,
-                        "team": p.team.value,
-                        "role": p.role.value,
-                    }
-                    for p in game_state.participants
-                ],
-            }
-            headers = self.build_signed_headers()
-            async with session.patch(
-                endpoint, json=payload, headers=headers, timeout=10
-            ) as response:
-                if response.status != 200:
-                    response_text = await response.text()
-                    bt.logging.error(
-                        f"Failed to update room state: HTTP {response.status} - {response_text}"
-                    )
-                else:
-                    bt.logging.info("Room state updated successfully")
-    except aiohttp.ClientError as e:
-        bt.logging.error(f"Network error updating room {roomId}: {e}")
-    except asyncio.TimeoutError:
-        bt.logging.error(f"Timeout error updating room {roomId} at {endpoint}")
+        payload = {
+            "competition": game_state.competition.value,
+            "validatorKey": self.wallet.hotkey.ss58_address,
+            "cards": [
+                {
+                    "word": card.word,
+                    "color": (
+                        card.color
+                        if (game_state.gameWinner or card.is_revealed)
+                        or game_state.competition == Competition.CLUE_COMPETITION
+                        else "-"
+                    ),
+                    "isRevealed": card.is_revealed,
+                    "wasRecentlyRevealed": card.was_recently_revealed,
+                }
+                for card in game_state.cards
+            ],
+            "chatHistory": [
+                {
+                    "sender": msg.sender.value,
+                    "message": msg.message,
+                    "team": msg.team.value,
+                    "reasoning": msg.reasoning,
+                    "clueText": msg.clueText,
+                    "number": msg.number,
+                    "guesses": msg.guesses,
+                }
+                for msg in game_state.chatHistory
+            ],
+            "currentTeam": game_state.currentTeam.value,
+            "currentRole": game_state.currentRole.value,
+            "previousTeam": (
+                game_state.previousTeam.value if game_state.previousTeam else None
+            ),
+            "previousRole": (
+                game_state.previousRole.value if game_state.previousRole else None
+            ),
+            "remainingRed": game_state.remainingRed,
+            "remainingBlue": game_state.remainingBlue,
+            "currentClue": (
+                {
+                    "clueText": game_state.currentClue.clueText,
+                    "number": game_state.currentClue.number,
+                }
+                if game_state.currentClue
+                else None
+            ),
+            "currentGuesses": (
+                game_state.currentGuesses if game_state.currentGuesses else []
+            ),
+            "gameWinner": (
+                game_state.gameWinner.value if game_state.gameWinner else None
+            ),
+            "participants": [
+                {
+                    "name": p.name,
+                    "hotkey": p.hotkey,
+                    "team": p.team.value,
+                    "role": p.role.value,
+                }
+                for p in game_state.participants
+            ],
+        }
+        headers = self.build_signed_headers()
+        
+        await _update_room_request(self, endpoint, payload, headers)
+        bt.logging.info(f"Room {roomId} state updated successfully")
     except Exception as e:
-        bt.logging.error(f"Unexpected error updating room {roomId}: {e}")
+        bt.logging.warning(
+            f"Failed to update room {roomId} after retries (non-critical): {e}"
+        )
+        # Don't raise - room updates are best-effort
+
+
+@retry_with_exponential_backoff(
+    max_retries=2,
+    initial_delay=0.5,
+    max_delay=5.0,
+    exponential_base=2.0,
+    retryable_exceptions=(aiohttp.ClientError, asyncio.TimeoutError),
+)
+async def _remove_room_request(self, endpoint: str, headers: dict):
+    """Internal function to make room deletion request with retry logic."""
+    async with aiohttp.ClientSession() as session:
+        async with session.delete(
+            endpoint, headers=headers, timeout=10
+        ) as response:
+            if response.status == 200:
+                bt.logging.debug("Room deleted successfully")
+                return True
+            else:
+                response_text = await response.text()
+                error_msg = (
+                    f"Failed to delete room: HTTP {response.status} - {response_text[:200]}"
+                )
+                bt.logging.warning(error_msg)
+                raise aiohttp.ClientResponseError(
+                    request_info=response.request_info,
+                    history=response.history,
+                    status=response.status,
+                    message=error_msg,
+                )
 
 
 async def remove_room(self, roomId):
-    # return
+    """
+    Remove game room via API with retry logic.
+
+    Args:
+        roomId: Room ID to delete
+    """
     endpoint = f"{self.backend_base}/api/v1/rooms/{roomId}"
     try:
-        async with aiohttp.ClientSession() as session:
-            headers = self.build_signed_headers()
-            async with session.delete(
-                endpoint, headers=headers, timeout=10
-            ) as response:
-                if response.status != 200:
-                    response_text = await response.text()
-                    bt.logging.error(
-                        f"Failed to delete room: HTTP {response.status} - {response_text}"
-                    )
-                else:
-                    bt.logging.info("Room deleted successfully")
-    except aiohttp.ClientError as e:
-        bt.logging.error(f"Network error deleting room {roomId}: {e}")
-    except asyncio.TimeoutError:
-        bt.logging.error(f"Timeout error deleting room {roomId} at {endpoint}")
+        headers = self.build_signed_headers()
+        await _remove_room_request(self, endpoint, headers)
+        bt.logging.info(f"Room {roomId} deleted successfully")
     except Exception as e:
-        bt.logging.error(f"Unexpected error deleting room {roomId}: {e}")
+        bt.logging.warning(
+            f"Failed to delete room {roomId} after retries (non-critical): {e}"
+        )
+        # Don't raise - room deletion is best-effort cleanup
+
+
+@retry_with_exponential_backoff(
+    max_retries=3,
+    initial_delay=1.0,
+    max_delay=30.0,
+    exponential_base=2.0,
+    retryable_exceptions=(
+        RateLimitError,
+        APIConnectionError,
+        APITimeoutError,
+        APIStatusError,
+        Exception,
+    ),
+)
+async def get_gpt5_response_with_retry(messages, effort="low"):
+    """
+    Get GPT-5 response with retry logic and circuit breaker protection.
+
+    Args:
+        messages: List of message dictionaries for the LLM
+        effort: Reasoning effort level
+
+    Returns:
+        Response text from GPT-5
+
+    Raises:
+        Exception: If all retries fail or circuit breaker is open
+    """
+    async def _make_api_call():
+        """Internal async wrapper for OpenAI API call."""
+        return client.responses.create(
+            model="gpt-5.1",
+            input=messages,
+            reasoning={"effort": effort},
+            text={"verbosity": "low"},
+        )
+    
+    try:
+        result = await llm_circuit_breaker.call(_make_api_call)
+        return result.output_text
+    except AuthenticationError as e:
+        bt.logging.error(
+            f"Authentication error with GPT-5 API. Check API key: {e}"
+        )
+        raise
+    except RateLimitError as e:
+        bt.logging.warning(f"Rate limit exceeded for GPT-5 API: {e}")
+        raise
+    except (APIConnectionError, APITimeoutError) as e:
+        bt.logging.warning(f"Connection/timeout error with GPT-5 API: {e}")
+        raise
+    except APIStatusError as e:
+        bt.logging.error(f"API status error from GPT-5: {e.status_code} - {e}")
+        raise
+    except Exception as e:
+        bt.logging.error(f"Unexpected error fetching response from GPT-5: {e}")
+        bt.logging.debug(
+            f"Messages sent to GPT-5: {json.dumps(messages, indent=2)}"
+        )
+        raise
 
 
 async def get_llm_response(synapse: GameSynapse) -> GameSynapseOutput:
+    """
+    Get LLM response for game synapse with robust error handling.
 
-    async def get_gpt5_response(messages, effort="low"):
-        try:
-            result = client.responses.create(
-                model="gpt-5.1",
-                input=messages,
-                reasoning={"effort": effort},  # Optional: control reasoning effort
-                text={"verbosity": "low"},
-            )
-            return result.output_text
-        except Exception as e:
-            bt.logging.error(f"Error fetching response from GPT-5: {e}")
-            bt.logging.debug(
-                f"Messages sent to GPT-5: {json.dumps(messages, indent=2)}"
-            )
-            return None
+    Args:
+        synapse: GameSynapse containing game state and role information
 
+    Returns:
+        GameSynapseOutput with clue/guesses and reasoning
+
+    Raises:
+        Exception: If unable to get valid response after retries
+    """
     # Build board and clue strings outside the f-string to avoid backslash-in-expression errors.
     messages = []
     if synapse.your_role == "operative":
@@ -308,13 +467,23 @@ async def get_llm_response(synapse: GameSynapse) -> GameSynapseOutput:
     )
     messages.append({"role": "user", "content": userPrompt})
 
-    retry = 0
-    while retry < 2:
-        response_str = await get_gpt5_response(messages)
-        if response_str:
-            break
-        retry += 1
-    response_dict = json.loads(response_str)
+    try:
+        response_str = await get_gpt5_response_with_retry(messages)
+        if not response_str:
+            raise ValueError("Empty response from GPT-5")
+        
+        response_dict = json.loads(response_str)
+    except json.JSONDecodeError as e:
+        bt.logging.error(
+            f"Failed to parse JSON response from GPT-5: {e}. Response: {response_str[:200]}"
+        )
+        raise ValueError(f"Invalid JSON response from LLM: {e}") from e
+    except Exception as e:
+        bt.logging.error(
+            f"Failed to get LLM response after retries: {e}. "
+            f"Role: {synapse.your_role}, Team: {synapse.your_team}"
+        )
+        raise
     if "clue" in response_dict:
         clue = response_dict["clue"]
     else:
@@ -550,10 +719,16 @@ async def forward(self):
             )
         else:
             bt.logging.info(f"⏬ Sending game query to LLM for {your_role}")
-            response = await get_llm_response(synapse)
-            if response is None:
-                bt.logging.error("Failed to get response from LLM, exiting.")
-                time.sleep(10)
+            try:
+                response = await get_llm_response(synapse)
+            except Exception as e:
+                bt.logging.error(
+                    f"Failed to get response from LLM after retries: {e}. "
+                    f"Exiting game loop."
+                )
+                end_reason = "llm_error"
+                # Mark game as failed and exit gracefully
+                await update_room(self, game_state, roomId)
                 return
 
         # 2.2 Check response
