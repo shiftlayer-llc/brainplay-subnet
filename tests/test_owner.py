@@ -4,9 +4,9 @@ from pydantic import BaseModel
 import random
 import asyncio
 
-with open("game/utils/wordlist-eng.txt") as f:
+with open("game/data/words/default.txt") as f:
     words = f.readlines()
-    # select 25 random words
+# select 25 random words
 words = random.sample(words, 25)
 
 

@@ -93,8 +93,8 @@ class BaseValidatorNeuron(BaseNeuron):
         self.should_exit: bool = False
         self.is_running: bool = False
         self.thread: Union[threading.Thread, None] = None
-        self.competition_process_1 = None  # Process for clue competition
-        self.competition_process_2 = None  # Process for guess competition
+        self.codenames_clue_process = None  # Process for clue competition
+        self.codenames_guess_process = None  # Process for guess competition
 
     def serve_axon(self):
         """Serve axon to enable external connections."""
@@ -126,7 +126,9 @@ class BaseValidatorNeuron(BaseNeuron):
         await asyncio.gather(*coroutines)
 
     def init_db(self):
-        scores_db_path = os.path.join("/tmp", f"{self.current_competition.value}.db")
+        scores_db_path = os.path.join("/tmp", f"{self.competition_code.value}.db")
+
+        # Clear the database if the flag is set
         if getattr(self.config, "clear_db", False):
             if os.path.exists(scores_db_path):
                 try:
@@ -142,6 +144,8 @@ class BaseValidatorNeuron(BaseNeuron):
                 bt.logging.info(
                     "Score database flag set but no existing file found to remove."
                 )
+
+        # Initialize endpoints urls and game code
         self.backend_base = "https://backend.shiftlayer.ai"
         try:
             if getattr(self.config.subtensor, "network", None) == "test":
@@ -149,9 +153,15 @@ class BaseValidatorNeuron(BaseNeuron):
         except AttributeError:
             pass
         bt.logging.info(f"Using backend: {self.backend_base}")
-        scores_endpoint = f"{self.backend_base}/api/v1/rooms/score"
-        scores_fetch_endpoint = f"{self.backend_base}/api/v1/rooms/sync"
-        self.active_miners_endpoint = f"{self.backend_base}/api/v1/rooms/miner/active"
+
+        self.game_code = getattr(self.config, "game", "codenames")
+        scores_endpoint = f"{self.backend_base}/api/v1/games/{self.game_code}/score"
+        scores_fetch_endpoint = (
+            f"{self.backend_base}/api/v1/games/{self.game_code}/sync"
+        )
+        self.active_miners_endpoint = (
+            f"{self.backend_base}/api/v1/games/{self.game_code}/miner/active"
+        )
         self.score_store = ScoreStore(
             scores_db_path,
             backend_url=scores_endpoint,
@@ -186,7 +196,7 @@ class BaseValidatorNeuron(BaseNeuron):
             Exception: For unforeseen errors during the miner's operation, which are logged for diagnosis.
         """
         competition = Competition(self.config.competition)
-        self.current_competition = competition
+        self.competition_code = competition
 
         self.init_db()
 
@@ -312,27 +322,31 @@ class BaseValidatorNeuron(BaseNeuron):
                 python_exe = sys.executable
                 args = sys.argv.copy()
                 args += ["--competition"]
-                self.competition_process_1 = subprocess.Popen(
-                    [python_exe, "-u", *args, Competition.CLUE_COMPETITION.value],
+
+                # Initialize sub-processes for each competition
+                self.codenames_clue_process = subprocess.Popen(
+                    [python_exe, "-u", *args, Competition.CODENAMES_CLUE.value],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
                 )
                 time.sleep(60)  # stagger start times to avoid overload
-                self.competition_process_2 = subprocess.Popen(
-                    [python_exe, "-u", *args, Competition.GUESS_COMPETITION.value],
+                self.codenames_guess_process = subprocess.Popen(
+                    [python_exe, "-u", *args, Competition.CODENAMES_GUESS.value],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
                 )
+
+                # Start threads and stream output from each sub-process
                 threading.Thread(
                     target=stream_output,
-                    args=("CLUE", self.competition_process_1),
+                    args=("CLUE", self.codenames_clue_process),
                     daemon=True,
                 ).start()
                 threading.Thread(
                     target=stream_output,
-                    args=("GUESS", self.competition_process_2),
+                    args=("GUESS", self.codenames_guess_process),
                     daemon=True,
                 ).start()
             else:
@@ -360,10 +374,15 @@ class BaseValidatorNeuron(BaseNeuron):
         timestamp = int(datetime.now(tz=timezone.utc).timestamp())
         message = f"<Bytes>{timestamp}</Bytes>"
         signature = self.wallet.hotkey.sign(message)
+
         return {
             "X-Validator-Hotkey": self.wallet.hotkey.ss58_address,
             "X-Validator-Signature": signature.hex(),
             "X-Validator-Timestamp": str(timestamp),
+            "x-game-code": getattr(self, "game_code", "codenames"),
+            "x-competition-code": getattr(
+                self.competition_code, "value", "codenames_clue"
+            ),
         }
 
     def __enter__(self):
@@ -388,12 +407,12 @@ class BaseValidatorNeuron(BaseNeuron):
             self.should_exit = True
             if self.config.competition == "main":
                 bt.logging.debug("Stopping competition subprocesses.")
-                if self.competition_process_1:
-                    self.competition_process_1.terminate()
-                    self.competition_process_1.wait(timeout=5)
-                if self.competition_process_2:
-                    self.competition_process_2.terminate()
-                    self.competition_process_2.wait(timeout=5)
+                if self.codenames_clue_process:
+                    self.codenames_clue_process.terminate()
+                    self.codenames_clue_process.wait(timeout=5)
+                if self.codenames_guess_process:
+                    self.codenames_guess_process.terminate()
+                    self.codenames_guess_process.wait(timeout=5)
                 bt.logging.debug("Stopped competition subprocesses.")
             if self.thread:
                 self.thread.join(5)
@@ -425,7 +444,7 @@ class BaseValidatorNeuron(BaseNeuron):
             self._burn_weights()
             return
 
-        competition = self.current_competition
+        competition = self.competition_code
         weights = np.zeros(self.metagraph.n, dtype=np.float32)
         comp_value = competition.value
 
