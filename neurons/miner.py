@@ -24,8 +24,7 @@ import bittensor as bt
 import os
 from dotenv import load_dotenv
 import game
-from game.utils.spySysPrompt import spySysPrompt
-from game.utils.opSysPrompt import opSysPrompt
+from game.utils.prompt_loader import get_spy_sys_prompt, get_op_sys_prompt
 
 # Bittensor Miner Template:
 from game.protocol import GameSynapse, GameSynapseOutput, Ping
@@ -179,7 +178,7 @@ class Miner(BaseMinerNeuron):
             {
                 "role": "system",
                 "content": (
-                    spySysPrompt if synapse.your_role == "spymaster" else opSysPrompt
+                    get_spy_sys_prompt() if synapse.your_role == "spymaster" else get_op_sys_prompt()
                 ),
             }
         )
