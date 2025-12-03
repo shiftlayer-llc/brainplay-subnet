@@ -61,7 +61,13 @@ def check_config(cls, config: "bt.Config"):
     if not config.neuron.dont_save_events:
         # Add custom event logger for the events.
         events_logger = setup_events_logger(
-            config.neuron.full_path, config.neuron.events_retention_size
+            config.neuron.full_path,
+            config.neuron.events_retention_size,
+            use_json=getattr(config.logging, 'use_json', False),
+            backup_count=getattr(config.logging, 'backup_count', 10),
+            use_timed_rotation=getattr(config.logging, 'use_timed_rotation', False),
+            rotation_when=getattr(config.logging, 'rotation_when', 'midnight'),
+            rotation_interval=getattr(config.logging, 'rotation_interval', 1),
         )
         bt.logging.register_primary_logger(events_logger.name)
 
@@ -106,6 +112,50 @@ def add_args(cls, parser):
         action="store_true",
         help="If set, we dont save events to a log file.",
         default=False,
+    )
+
+    parser.add_argument(
+        "--logging.use_json",
+        action="store_true",
+        help="Use JSON format for structured logging.",
+        default=False,
+    )
+
+    parser.add_argument(
+        "--logging.log_level",
+        type=str,
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Set the logging level.",
+        default="INFO",
+    )
+
+    parser.add_argument(
+        "--logging.use_timed_rotation",
+        action="store_true",
+        help="Use time-based log rotation instead of size-based.",
+        default=False,
+    )
+
+    parser.add_argument(
+        "--logging.rotation_when",
+        type=str,
+        choices=["S", "M", "H", "D", "W0", "W1", "W2", "W3", "W4", "W5", "W6", "midnight"],
+        help="When to rotate logs (for time-based rotation).",
+        default="midnight",
+    )
+
+    parser.add_argument(
+        "--logging.rotation_interval",
+        type=int,
+        help="Rotation interval (for time-based rotation).",
+        default=1,
+    )
+
+    parser.add_argument(
+        "--logging.backup_count",
+        type=int,
+        help="Number of backup log files to keep.",
+        default=10,
     )
 
     parser.add_argument(

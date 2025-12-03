@@ -18,6 +18,7 @@
 
 import asyncio
 import time
+import uuid
 import bittensor as bt
 import aiohttp
 import json
@@ -27,6 +28,12 @@ from game.utils.spySysPrompt import spySysPrompt
 from game.utils.ruleSysPrompt import ruleSysPrompt
 from game.validator.reward import get_rewards
 from game.utils.uids import choose_players
+from game.utils.logging import (
+    set_request_id,
+    clear_request_id,
+    PerformanceLogger,
+    get_request_id,
+)
 import typing
 from game.utils.game import Competition, TParticipant
 from game.utils.game import (
@@ -339,6 +346,7 @@ async def get_llm_response(synapse: GameSynapse) -> GameSynapseOutput:
     return output
 
 
+@PerformanceLogger.log_performance(log_level=bt.logging.INFO)
 async def forward(self):
     """
     This method is invoked by the validator at each time step.
@@ -349,323 +357,240 @@ async def forward(self):
         self (bittensor.neuron.Neuron): The neuron instance containing all necessary state information for the validator.
 
     """
-    competition = self.current_competition
+    # Generate unique request ID for this game session
+    request_id = f"game_{uuid.uuid4().hex[:8]}"
+    set_request_id(request_id)
+    
+    try:
+        competition = self.current_competition
+        bt.logging.info(f"[Request ID: {request_id}] Starting forward step for competition: {competition}")
 
-    # Sync any pending score records to the database
-    await self.score_store.sync_scores_all()
+        # Sync any pending score records to the database
+        await self.score_store.sync_scores_all()
 
-    miner_uids, observer_hotkeys = await choose_players(
-        self, competition=competition, k=2
-    )
-    # Exception handling when number of miners less than 2
-    if len(miner_uids) < 2:
-        return
-
-    (red_team, blue_team) = organize_team(self, competition, miner_uids)
-    bt.logging.info(f"\033[91mRed Team: {red_team}\033[0m")
-    bt.logging.info(f"\033[94mBlue Team: {blue_team}\033[0m")
-
-    rs_uid = red_team["spymaster"]
-    ro_uid = red_team["operative"]
-    bs_uid = blue_team["spymaster"]
-    bo_uid = blue_team["operative"]
-
-    rs_hotkey = self.metagraph.axons[rs_uid].hotkey
-    ro_hotkey = self.metagraph.axons[ro_uid].hotkey
-    bs_hotkey = self.metagraph.axons[bs_uid].hotkey
-    bo_hotkey = self.metagraph.axons[bo_uid].hotkey
-
-    invalid_respond_counts = {
-        miner_uids[0]: 0,
-        miner_uids[1]: 0,
-    }
-
-    participants: typing.List[TParticipant] = []
-    for team in [red_team, blue_team]:
-        participants.append(
-            TParticipant(
-                name=(
-                    ("Miner " + str(team["spymaster"]))
-                    if team["spymaster"] != self.uid
-                    else "Validator"
-                ),
-                hotkey=self.metagraph.axons[team["spymaster"]].hotkey,
-                team=TeamColor.RED if team == red_team else TeamColor.BLUE,
-                role=Role.SPYMASTER,
-            )
+        miner_uids, observer_hotkeys = await choose_players(
+            self, competition=competition, k=2
         )
-        participants.append(
-            TParticipant(
-                name=(
-                    ("Miner " + str(team["operative"]))
-                    if team["operative"] != self.uid
-                    else "Validator"
-                ),
-                hotkey=self.metagraph.axons[team["operative"]].hotkey,
-                team=TeamColor.RED if team == red_team else TeamColor.BLUE,
-                role=Role.OPERATIVE,
-            )
-        )
-    for hotkey in observer_hotkeys:
-        uid = self.metagraph.hotkeys.index(hotkey)
-        participants.append(
-            TParticipant(
-                name=("Miner " + str(uid)),
-                hotkey=hotkey,
-                team=TeamColor.OBSERVER,
-                role=Role.OBSERVER,
-            )
-        )
-    observer_uids = [
-        self.metagraph.hotkeys.index(hotkey) for hotkey in observer_hotkeys
-    ]
-    if observer_uids:
-        bt.logging.info(f"\033[33mObservers: {observer_uids}\033[0m")
-    # * Initialize game
-    game_step = 0
-    started_at = time.time()
-    game_state = GameState(competition=competition, participants=participants)
-    end_reason = "completed"
-    MAX_GAME_STEPS = 50
+        # Exception handling when number of miners less than 2
+        if len(miner_uids) < 2:
+            bt.logging.warning(f"[Request ID: {request_id}] Not enough miners available ({len(miner_uids)} < 2), skipping game.")
+            return
 
-    # Create new room via API call
-    # ===============🤞ROOM CREATE===================
-    roomId = await create_room(self, game_state)
-    if roomId is None:
-        bt.logging.error("Failed to create room, exiting.")
-        time.sleep(10)
-        return
+        (red_team, blue_team) = organize_team(self, competition, miner_uids)
+        bt.logging.info(f"[Request ID: {request_id}] \033[91mRed Team: {red_team}\033[0m")
+        bt.logging.info(f"[Request ID: {request_id}] \033[94mBlue Team: {blue_team}\033[0m")
 
-    # ===============GAME LOOP=======================
-    bt.logging.info("╔══════════════════════════════════════════════════════════════╗")
-    bt.logging.info("║                     🚀  GAME STARTING  🚀                    ║")
-    bt.logging.info(
-        f"║                Competition: {competition.value}                 ║"
-    )
-    bt.logging.info(
-        "╚══════════════════════════════════════════════════════════════╝\n"
-    )
-    while game_state.gameWinner is None and game_step < MAX_GAME_STEPS:
-        bt.logging.info("=" * 50)
-        bt.logging.info(f"Game step {game_step + 1}")
+        rs_uid = red_team["spymaster"]
+        ro_uid = red_team["operative"]
+        bs_uid = blue_team["spymaster"]
+        bo_uid = blue_team["operative"]
 
-        is_miner_turn = (
-            game_state.competition == Competition.CLUE_COMPETITION
-            and game_state.currentRole == Role.SPYMASTER
-            or game_state.competition == Competition.GUESS_COMPETITION
-            and game_state.currentRole == Role.OPERATIVE
-        )
+        rs_hotkey = self.metagraph.axons[rs_uid].hotkey
+        ro_hotkey = self.metagraph.axons[ro_uid].hotkey
+        bs_hotkey = self.metagraph.axons[bs_uid].hotkey
+        bo_hotkey = self.metagraph.axons[bo_uid].hotkey
 
-        should_skip_turn = False
+        invalid_respond_counts = {
+            miner_uids[0]: 0,
+            miner_uids[1]: 0,
+        }
 
-        bt.logging.info(
-            f"Current Role: {game_state.currentTeam.value} {game_state.currentRole.value} ({'Miner' if is_miner_turn else 'Validator'})"
-        )
-
-        # 1. Prepare the query
-        if game_state.currentRole == Role.SPYMASTER:
-            cards = game_state.cards
-            if game_state.currentTeam == TeamColor.RED:
-                to_uid = red_team["spymaster"]
-            else:
-                to_uid = blue_team["spymaster"]
-        else:
-            # If receiver is operative, we need to send the cards without color
-            cards = [
-                CardType(
-                    word=card.word,
-                    color=card.color if card.is_revealed else None,
-                    is_revealed=card.is_revealed,
-                    was_recently_revealed=card.was_recently_revealed,
+        participants: typing.List[TParticipant] = []
+        for team in [red_team, blue_team]:
+            participants.append(
+                TParticipant(
+                    name=(
+                        ("Miner " + str(team["spymaster"]))
+                        if team["spymaster"] != self.uid
+                        else "Validator"
+                    ),
+                    hotkey=self.metagraph.axons[team["spymaster"]].hotkey,
+                    team=TeamColor.RED if team == red_team else TeamColor.BLUE,
+                    role=Role.SPYMASTER,
                 )
-                for card in game_state.cards
-            ]
-            if game_state.currentTeam == TeamColor.RED:
-                to_uid = red_team["operative"]
-            else:
-                to_uid = blue_team["operative"]
-
-            # Remove animation of recently revealed cards
-            resetAnimations(self, game_state.cards)
-
-        your_team = game_state.currentTeam
-        your_role = game_state.currentRole
-        remaining_red = game_state.remainingRed
-        remaining_blue = game_state.remainingBlue
-        your_clue = (
-            game_state.currentClue.clueText
-            if game_state.currentClue is not None
-            else None
-        )
-        your_number = (
-            game_state.currentClue.number
-            if game_state.currentClue is not None
-            else None
-        )
-
-        synapse = GameSynapse(
-            your_team=your_team,
-            your_role=your_role,
-            remaining_red=remaining_red,
-            remaining_blue=remaining_blue,
-            your_clue=your_clue,
-            your_number=your_number,
-            cards=cards,
-            chat_history=[
-                GameChatMessage(
-                    team=chat.team.value,
-                    sender=chat.sender.value,
-                    message=chat.message,
-                    clueText=chat.clueText,
-                    number=chat.number,
-                    guesses=chat.guesses,
+            )
+            participants.append(
+                TParticipant(
+                    name=(
+                        ("Miner " + str(team["operative"]))
+                        if team["operative"] != self.uid
+                        else "Validator"
+                    ),
+                    hotkey=self.metagraph.axons[team["operative"]].hotkey,
+                    team=TeamColor.RED if team == red_team else TeamColor.BLUE,
+                    role=Role.OPERATIVE,
                 )
-                for chat in game_state.chatHistory
-            ],
-        )
-
-        # 2. Main Game Logic
+            )
+        for hotkey in observer_hotkeys:
+            uid = self.metagraph.hotkeys.index(hotkey)
+            participants.append(
+                TParticipant(
+                    name=("Miner " + str(uid)),
+                    hotkey=hotkey,
+                    team=TeamColor.OBSERVER,
+                    role=Role.OBSERVER,
+                )
+            )
+        observer_uids = [
+            self.metagraph.hotkeys.index(hotkey) for hotkey in observer_hotkeys
+        ]
+        if observer_uids:
+            bt.logging.info(f"[Request ID: {request_id}] \033[33mObservers: {observer_uids}\033[0m")
+        # * Initialize game
+        game_step = 0
         started_at = time.time()
-        # 2.1 Query the participant
-        response = None
+        game_state = GameState(competition=competition, participants=participants)
+        end_reason = "completed"
+        MAX_GAME_STEPS = 50
 
-        if is_miner_turn:
-            axon = self.metagraph.axons[to_uid]
-            bt.logging.info(
-                f"⏬ Sending game query to miner {to_uid}, ({axon.ip}:{axon.port}, {axon.hotkey})"
-            )
-            for i in range(3):
-                sent_at = time.time()
-                response = await self.dendrite(
-                    axons=axon,
-                    synapse=synapse,
-                    deserialize=True,
-                    timeout=30,
-                )
-                if response or (time.time() - sent_at) > 3:
-                    break
-                bt.logging.warning(f"⏳ No response from miner {to_uid} ({i+1}/3)")
-            bt.logging.info(
-                f"⏫ Response from miner {to_uid} took {time.time() - started_at:.2f}s"
-            )
-        else:
-            bt.logging.info(f"⏬ Sending game query to LLM for {your_role}")
-            response = await get_llm_response(synapse)
-            if response is None:
-                bt.logging.error("Failed to get response from LLM, exiting.")
-                time.sleep(10)
-                return
+        # Create new room via API call
+        # ===============🤞ROOM CREATE===================
+        roomId = await create_room(self, game_state)
+        if roomId is None:
+            bt.logging.error(f"[Request ID: {request_id}] Failed to create room, exiting.")
+            time.sleep(10)
+            return
+        
+        # Update request ID to include room ID for better tracking
+        request_id = f"{request_id}_room_{roomId}"
+        set_request_id(request_id)
+        bt.logging.info(f"[Request ID: {request_id}] Room created successfully. Starting game session.")
 
-        # 2.2 Check response
-        if response is None:
-            should_skip_turn = True
-            invalid_respond_counts[to_uid] += 1
-            bt.logging.warning(
-                f"No response from miner {to_uid} ({invalid_respond_counts[to_uid]}/2)"
+        # ===============GAME LOOP=======================
+        bt.logging.info(f"[Request ID: {request_id}] ╔══════════════════════════════════════════════════════════════╗")
+        bt.logging.info(f"[Request ID: {request_id}] ║                     🚀  GAME STARTING  🚀                    ║")
+        bt.logging.info(
+            f"[Request ID: {request_id}] ║                Competition: {competition.value}                 ║"
+        )
+        bt.logging.info(
+            f"[Request ID: {request_id}] ╚══════════════════════════════════════════════════════════════╝\n"
+        )
+        while game_state.gameWinner is None and game_step < MAX_GAME_STEPS:
+            bt.logging.info(f"[Request ID: {request_id}] " + "=" * 50)
+            bt.logging.info(f"[Request ID: {request_id}] Game step {game_step + 1}")
+
+            is_miner_turn = (
+                game_state.competition == Competition.CLUE_COMPETITION
+                and game_state.currentRole == Role.SPYMASTER
+                or game_state.competition == Competition.GUESS_COMPETITION
+                and game_state.currentRole == Role.OPERATIVE
             )
-            if invalid_respond_counts[to_uid] < 2:
-                # Switch turn to the other team
-                game_state.chatHistory.append(
-                    ChatMessage(
-                        sender=your_role,
-                        message="⚠️ No response received! Switching turn to the other team.",
-                        team=game_state.currentTeam,
-                        reasoning="No response received.",
+
+            should_skip_turn = False
+
+            bt.logging.info(
+                f"[Request ID: {request_id}] Current Role: {game_state.currentTeam.value} {game_state.currentRole.value} ({'Miner' if is_miner_turn else 'Validator'})"
+            )
+
+            # 1. Prepare the query
+            if game_state.currentRole == Role.SPYMASTER:
+                cards = game_state.cards
+                if game_state.currentTeam == TeamColor.RED:
+                    to_uid = red_team["spymaster"]
+                else:
+                    to_uid = blue_team["spymaster"]
+            else:
+                # If receiver is operative, we need to send the cards without color
+                cards = [
+                    CardType(
+                        word=card.word,
+                        color=card.color if card.is_revealed else None,
+                        is_revealed=card.is_revealed,
+                        was_recently_revealed=card.was_recently_revealed,
                     )
+                    for card in game_state.cards
+                ]
+                if game_state.currentTeam == TeamColor.RED:
+                    to_uid = red_team["operative"]
+                else:
+                    to_uid = blue_team["operative"]
+
+                # Remove animation of recently revealed cards
+                resetAnimations(self, game_state.cards)
+
+            your_team = game_state.currentTeam
+            your_role = game_state.currentRole
+            remaining_red = game_state.remainingRed
+            remaining_blue = game_state.remainingBlue
+            your_clue = (
+                game_state.currentClue.clueText
+                if game_state.currentClue is not None
+                else None
+            )
+            your_number = (
+                game_state.currentClue.number
+                if game_state.currentClue is not None
+                else None
+            )
+
+            synapse = GameSynapse(
+                your_team=your_team,
+                your_role=your_role,
+                remaining_red=remaining_red,
+                remaining_blue=remaining_blue,
+                your_clue=your_clue,
+                your_number=your_number,
+                cards=cards,
+                chat_history=[
+                    GameChatMessage(
+                        team=chat.team.value,
+                        sender=chat.sender.value,
+                        message=chat.message,
+                        clueText=chat.clueText,
+                        number=chat.number,
+                        guesses=chat.guesses,
+                    )
+                    for chat in game_state.chatHistory
+                ],
+            )
+
+            # 2. Main Game Logic
+            started_at = time.time()
+            # 2.1 Query the participant
+            response = None
+
+            if is_miner_turn:
+                axon = self.metagraph.axons[to_uid]
+                bt.logging.info(
+                    f"[Request ID: {request_id}] ⏬ Sending game query to miner {to_uid}, ({axon.ip}:{axon.port}, {axon.hotkey})"
+                )
+                for i in range(3):
+                    sent_at = time.time()
+                    response = await self.dendrite(
+                        axons=axon,
+                        synapse=synapse,
+                        deserialize=True,
+                        timeout=30,
+                    )
+                    if response or (time.time() - sent_at) > 3:
+                        break
+                    bt.logging.warning(f"[Request ID: {request_id}] ⏳ No response from miner {to_uid} ({i+1}/3)")
+                bt.logging.info(
+                    f"[Request ID: {request_id}] ⏫ Response from miner {to_uid} took {time.time() - started_at:.2f}s"
                 )
             else:
-                game_state.gameWinner = (
-                    TeamColor.RED
-                    if game_state.currentTeam == TeamColor.BLUE
-                    else TeamColor.BLUE
-                )
-                resetAnimations(self, game_state.cards)
-                end_reason = "no_response"
-                bt.logging.info(
-                    f"💀 No response received! Game over. Winner: {game_state.gameWinner} (Room ID: {roomId})"
-                )
-                game_state.chatHistory.append(
-                    ChatMessage(
-                        sender=your_role,
-                        message=f"💀 No response received! Game over.",
-                        team=game_state.currentTeam,
-                        reasoning="No response received.",
-                    )
-                )
-                # End the game and remove from gameboard after 10 seconds
-                await update_room(self, game_state, roomId)
-                break
+                bt.logging.info(f"[Request ID: {request_id}] ⏬ Sending game query to LLM for {your_role}")
+                response = await get_llm_response(synapse)
+                if response is None:
+                    bt.logging.error(f"[Request ID: {request_id}] Failed to get response from LLM, exiting.")
+                    time.sleep(10)
+                    return
 
-        # 2.3 Turn/Role-based game logic
-        elif game_state.currentRole == Role.SPYMASTER:
-            # Get the clue and number from the response
-            clue = response.clue_text
-            number = response.number
-            reasoning = response.reasoning
-
-            async def check_valid_clue(clue, number, board_words):
-                if clue is None or number is None or number <= 0:
-                    return False, "Clue or number is None"
-
-                messages = []
-                messages.append({"role": "system", "content": ruleSysPrompt})
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": f"Clue: {clue}, Number: {number}, Board Words: {board_words}",
-                    }
-                )
-
-                try:
-                    result = client.responses.create(
-                        model="gpt-5.1",
-                        input=messages,
-                        reasoning={"effort": "medium"},
-                        text={"verbosity": "low"},
-                    )
-                    result_json = json.loads(result.output_text)
-                    if result_json.get("valid") is False:
-                        bt.logging.info(f"Clue check: {result_json}")
-                        return False, result_json.get("reasoning", "Invalid clue")
-                except Exception as e:  # noqa: BLE001
-                    bt.logging.warning(f"Rule validation error: {e}")
-
-                bt.logging.info(f"✅ Clue '{clue}' with number {number} is valid")
-                return True, "Clue is valid"
-
-            bt.logging.info(f"Clue: {clue}, Number: {number}")
-            # bt.logging.info(f"Reasoning: {reasoning}")
-
-            board_words = [
-                card.word for card in game_state.cards if not card.is_revealed
-            ]
-
-            game_state.currentClue = Clue(clueText=clue, number=number)
-            game_state.currentClue.clueText = clue
-            game_state.currentClue.number = number
-
-            is_valid_clue, reason = (
-                (await check_valid_clue(clue, number, board_words))
-                if is_miner_turn
-                else (True, "validator clue")
-            )
-
-            if not is_valid_clue:
+            # 2.2 Check response
+            if response is None:
                 should_skip_turn = True
                 invalid_respond_counts[to_uid] += 1
+                bt.logging.warning(
+                    f"[Request ID: {request_id}] No response from miner {to_uid} ({invalid_respond_counts[to_uid]}/2)"
+                )
                 if invalid_respond_counts[to_uid] < 2:
-                    bt.logging.info(
-                        f"❌ Invalid clue '{clue}' provided by miner {to_uid} for board words {board_words}. Reason: {reason}"
-                    )
-                    bt.logging.info(f"Skipping turn to the other team.")
+                    # Switch turn to the other team
                     game_state.chatHistory.append(
                         ChatMessage(
-                            sender=Role.SPYMASTER,
-                            message=f"Gave invalid clue '{clue}' with number {number}. Reason: {reason} Skipping turn.",
+                            sender=your_role,
+                            message="⚠️ No response received! Switching turn to the other team.",
                             team=game_state.currentTeam,
-                            clueText="null" if clue is None else clue,
-                            number=-1 if number is None else number,
-                            reasoning=reasoning,
+                            reasoning="No response received.",
                         )
                     )
                 else:
@@ -677,252 +602,353 @@ async def forward(self):
                     resetAnimations(self, game_state.cards)
                     end_reason = "no_response"
                     bt.logging.info(
-                        f"💀 Invalid clue provided! Game over. Winner: {game_state.gameWinner} (Room ID: {roomId})"
+                        f"[Request ID: {request_id}] 💀 No response received! Game over. Winner: {game_state.gameWinner} (Room ID: {roomId})"
                     )
                     game_state.chatHistory.append(
                         ChatMessage(
                             sender=your_role,
-                            message=f"💀 Invalid clue provided! ({reason}) Game over.",
+                            message=f"💀 No response received! Game over.",
                             team=game_state.currentTeam,
-                            reasoning="Invalid clue provided.",
+                            reasoning="No response received.",
                         )
                     )
                     # End the game and remove from gameboard after 10 seconds
                     await update_room(self, game_state, roomId)
                     break
 
-            else:
-                game_state.chatHistory.append(
-                    ChatMessage(
-                        sender=Role.SPYMASTER,
-                        message=f"Gave clue '{clue}' with number {number}",
-                        team=game_state.currentTeam,
-                        clueText=clue,
-                        number=number,
-                        reasoning=reasoning,
+            # 2.3 Turn/Role-based game logic
+            elif game_state.currentRole == Role.SPYMASTER:
+                # Get the clue and number from the response
+                clue = response.clue_text
+                number = response.number
+                reasoning = response.reasoning
+
+                async def check_valid_clue(clue, number, board_words):
+                    if clue is None or number is None or number <= 0:
+                        return False, "Clue or number is None"
+
+                    messages = []
+                    messages.append({"role": "system", "content": ruleSysPrompt})
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": f"Clue: {clue}, Number: {number}, Board Words: {board_words}",
+                        }
                     )
+
+                    try:
+                        result = client.responses.create(
+                            model="gpt-5.1",
+                            input=messages,
+                            reasoning={"effort": "medium"},
+                            text={"verbosity": "low"},
+                        )
+                        result_json = json.loads(result.output_text)
+                        if result_json.get("valid") is False:
+                            bt.logging.info(f"[Request ID: {request_id}] Clue check: {result_json}")
+                            return False, result_json.get("reasoning", "Invalid clue")
+                    except Exception as e:  # noqa: BLE001
+                        bt.logging.warning(f"[Request ID: {request_id}] Rule validation error: {e}")
+
+                    bt.logging.info(f"[Request ID: {request_id}] ✅ Clue '{clue}' with number {number} is valid")
+                    return True, "Clue is valid"
+
+                bt.logging.info(f"[Request ID: {request_id}] Clue: {clue}, Number: {number}")
+                # bt.logging.info(f"Reasoning: {reasoning}")
+
+                board_words = [
+                    card.word for card in game_state.cards if not card.is_revealed
+                ]
+
+                game_state.currentClue = Clue(clueText=clue, number=number)
+                game_state.currentClue.clueText = clue
+                game_state.currentClue.number = number
+
+                is_valid_clue, reason = (
+                    (await check_valid_clue(clue, number, board_words))
+                    if is_miner_turn
+                    else (True, "validator clue")
                 )
 
-        elif game_state.currentRole == Role.OPERATIVE:
-            # Get the guessed cards from the response
-            guesses = response.guesses
-            reasoning = response.reasoning
-            bt.logging.info(f"Guessed cards: {guesses}")
-            if is_miner_turn and (guesses is None or len(guesses) == 0):
-                invalid_respond_counts[to_uid] += 1
-                bt.logging.info(f"⚠️ No guesses '{guesses}' provided by miner {to_uid}.")
-                if invalid_respond_counts[to_uid] < 2:
-                    # Switch turn to the other team
-                    game_state.chatHistory.append(
-                        ChatMessage(
-                            sender=Role.OPERATIVE,
-                            message="⚠️ No guesses provided! Switching turn to the other team.",
-                            team=game_state.currentTeam,
-                            reasoning="No guesses provided.",
-                        )
-                    )
-                else:
-                    # If the guesses is invalid, the other team wins
-                    game_state.gameWinner = (
-                        TeamColor.RED
-                        if game_state.currentTeam == TeamColor.BLUE
-                        else TeamColor.BLUE
-                    )
-                    resetAnimations(self, game_state.cards)
-                    end_reason = "no_response"
-                    bt.logging.info(
-                        f"❌ No guesses received! Game over. Winner: {game_state.gameWinner} (Room ID: {roomId})"
-                    )
-                    game_state.chatHistory.append(
-                        ChatMessage(
-                            sender=Role.OPERATIVE,
-                            message=f"❌ No guesses provided.",
-                            team=game_state.currentTeam,
-                            guesses=[],
-                            reasoning="No guesses provided.",
-                        )
-                    )
-                    await update_room(self, game_state, roomId)
-                    break
-            else:
-                # Update the game state
-                choose_assasin = False
-
-                if len(guesses) > your_number + 1:
-                    bt.logging.info(
-                        f"⚠️ Too many guesses '{guesses}' provided by miner {to_uid} (allowed: {your_number + 1})."
-                    )
-                    guesses = guesses[: your_number + 1]
-                    bt.logging.info(f"Truncated guesses to: {guesses}")
-                game_state.currentGuesses = guesses
-                game_state.chatHistory.append(
-                    ChatMessage(
-                        sender=Role.OPERATIVE,
-                        message=f"Guessed cards: {', '.join(guesses)}",
-                        team=game_state.currentTeam,
-                        reasoning=reasoning,
-                        guesses=guesses,
-                    )
-                )
-                for guess in guesses:
-                    card = next(
-                        (
-                            c
-                            for c in game_state.cards
-                            if c.word.lower() == guess.lower()
-                        ),
-                        None,
-                    )
-                    if card is None or card.is_revealed:
-                        bt.logging.debug(f"Invalid guess: {guess}")
-                        continue
-                    card.is_revealed = True
-                    card.was_recently_revealed = True
-                    if card.color == "red":
-                        game_state.remainingRed -= 1
-                    elif card.color == "blue":
-                        game_state.remainingBlue -= 1
-
-                    if game_state.remainingRed == 0:
-                        game_state.gameWinner = TeamColor.RED
-                        resetAnimations(self, game_state.cards)
-                        end_reason = "red_all_cards"
+                if not is_valid_clue:
+                    should_skip_turn = True
+                    invalid_respond_counts[to_uid] += 1
+                    if invalid_respond_counts[to_uid] < 2:
                         bt.logging.info(
-                            f"🎉 All red cards found! Winner: {game_state.gameWinner}"
+                            f"[Request ID: {request_id}] ❌ Invalid clue '{clue}' provided by miner {to_uid} for board words {board_words}. Reason: {reason}"
                         )
+                        bt.logging.info(f"[Request ID: {request_id}] Skipping turn to the other team.")
                         game_state.chatHistory.append(
                             ChatMessage(
-                                sender=Role.OPERATIVE,
-                                message=f"🎉 All red cards found!",
+                                sender=Role.SPYMASTER,
+                                message=f"Gave invalid clue '{clue}' with number {number}. Reason: {reason} Skipping turn.",
                                 team=game_state.currentTeam,
-                                guesses=guesses,
+                                clueText="null" if clue is None else clue,
+                                number=-1 if number is None else number,
                                 reasoning=reasoning,
                             )
                         )
-                        await update_room(self, game_state, roomId)
-                        break
-                    elif game_state.remainingBlue == 0:
-                        game_state.gameWinner = TeamColor.BLUE
-                        resetAnimations(self, game_state.cards)
-                        end_reason = "blue_all_cards"
-                        bt.logging.info(
-                            f"🎉 All blue cards found! Winner: {game_state.gameWinner}"
-                        )
-                        game_state.chatHistory.append(
-                            ChatMessage(
-                                sender=Role.OPERATIVE,
-                                message=f"🎉 All blue cards found!",
-                                team=game_state.currentTeam,
-                                guesses=guesses,
-                                reasoning=reasoning,
-                            )
-                        )
-                        await update_room(self, game_state, roomId)
-                        break
-
-                    if card.color == "assassin":
-                        choose_assasin = True
+                    else:
                         game_state.gameWinner = (
                             TeamColor.RED
                             if game_state.currentTeam == TeamColor.BLUE
                             else TeamColor.BLUE
                         )
                         resetAnimations(self, game_state.cards)
-                        end_reason = "assassin"
+                        end_reason = "no_response"
                         bt.logging.info(
-                            f"💀 Assassin card '{card.word}' found! Game over. Winner: {game_state.gameWinner} (Room ID: {roomId})"
+                            f"[Request ID: {request_id}] 💀 Invalid clue provided! Game over. Winner: {game_state.gameWinner} (Room ID: {roomId})"
+                        )
+                        game_state.chatHistory.append(
+                            ChatMessage(
+                                sender=your_role,
+                                message=f"💀 Invalid clue provided! ({reason}) Game over.",
+                                team=game_state.currentTeam,
+                                reasoning="Invalid clue provided.",
+                            )
+                        )
+                        # End the game and remove from gameboard after 10 seconds
+                        await update_room(self, game_state, roomId)
+                        break
+
+                else:
+                    game_state.chatHistory.append(
+                        ChatMessage(
+                            sender=Role.SPYMASTER,
+                            message=f"Gave clue '{clue}' with number {number}",
+                            team=game_state.currentTeam,
+                            clueText=clue,
+                            number=number,
+                            reasoning=reasoning,
+                        )
+                    )
+
+            elif game_state.currentRole == Role.OPERATIVE:
+                # Get the guessed cards from the response
+                guesses = response.guesses
+                reasoning = response.reasoning
+                bt.logging.info(f"[Request ID: {request_id}] Guessed cards: {guesses}")
+                if is_miner_turn and (guesses is None or len(guesses) == 0):
+                    invalid_respond_counts[to_uid] += 1
+                    bt.logging.info(f"[Request ID: {request_id}] ⚠️ No guesses '{guesses}' provided by miner {to_uid}.")
+                    if invalid_respond_counts[to_uid] < 2:
+                        # Switch turn to the other team
+                        game_state.chatHistory.append(
+                            ChatMessage(
+                                sender=Role.OPERATIVE,
+                                message="⚠️ No guesses provided! Switching turn to the other team.",
+                                team=game_state.currentTeam,
+                                reasoning="No guesses provided.",
+                            )
+                        )
+                    else:
+                        # If the guesses is invalid, the other team wins
+                        game_state.gameWinner = (
+                            TeamColor.RED
+                            if game_state.currentTeam == TeamColor.BLUE
+                            else TeamColor.BLUE
+                        )
+                        resetAnimations(self, game_state.cards)
+                        end_reason = "no_response"
+                        bt.logging.info(
+                            f"[Request ID: {request_id}] ❌ No guesses received! Game over. Winner: {game_state.gameWinner} (Room ID: {roomId})"
                         )
                         game_state.chatHistory.append(
                             ChatMessage(
                                 sender=Role.OPERATIVE,
-                                message=f"💀 Assassin card '{card.word}' found! Game over.",
+                                message=f"❌ No guesses provided.",
                                 team=game_state.currentTeam,
-                                guesses=guesses,
-                                reasoning=reasoning,
+                                guesses=[],
+                                reasoning="No guesses provided.",
                             )
                         )
                         await update_room(self, game_state, roomId)
                         break
+                else:
+                    # Update the game state
+                    choose_assasin = False
 
-                    if card.color != game_state.currentTeam.value:
-                        # If the card is not of our team color, we break
-                        # This is to ensure that the operative only guesses cards of their team color
-                        bt.logging.warning(
-                            f"❌ Card {card.word} is not of team color {game_state.currentTeam.value}, breaking."
+                    if len(guesses) > your_number + 1:
+                        bt.logging.info(
+                            f"[Request ID: {request_id}] ⚠️ Too many guesses '{guesses}' provided by miner {to_uid} (allowed: {your_number + 1})."
                         )
+                        guesses = guesses[: your_number + 1]
+                        bt.logging.info(f"[Request ID: {request_id}] Truncated guesses to: {guesses}")
+                    game_state.currentGuesses = guesses
+                    game_state.chatHistory.append(
+                        ChatMessage(
+                            sender=Role.OPERATIVE,
+                            message=f"Guessed cards: {', '.join(guesses)}",
+                            team=game_state.currentTeam,
+                            reasoning=reasoning,
+                            guesses=guesses,
+                        )
+                    )
+                    for guess in guesses:
+                        card = next(
+                            (
+                                c
+                                for c in game_state.cards
+                                if c.word.lower() == guess.lower()
+                            ),
+                            None,
+                        )
+                        if card is None or card.is_revealed:
+                            bt.logging.debug(f"[Request ID: {request_id}] Invalid guess: {guess}")
+                            continue
+                        card.is_revealed = True
+                        card.was_recently_revealed = True
+                        if card.color == "red":
+                            game_state.remainingRed -= 1
+                        elif card.color == "blue":
+                            game_state.remainingBlue -= 1
+
+                        if game_state.remainingRed == 0:
+                            game_state.gameWinner = TeamColor.RED
+                            resetAnimations(self, game_state.cards)
+                            end_reason = "red_all_cards"
+                            bt.logging.info(
+                                f"[Request ID: {request_id}] 🎉 All red cards found! Winner: {game_state.gameWinner}"
+                            )
+                            game_state.chatHistory.append(
+                                ChatMessage(
+                                    sender=Role.OPERATIVE,
+                                    message=f"🎉 All red cards found!",
+                                    team=game_state.currentTeam,
+                                    guesses=guesses,
+                                    reasoning=reasoning,
+                                )
+                            )
+                            await update_room(self, game_state, roomId)
+                            break
+                        elif game_state.remainingBlue == 0:
+                            game_state.gameWinner = TeamColor.BLUE
+                            resetAnimations(self, game_state.cards)
+                            end_reason = "blue_all_cards"
+                            bt.logging.info(
+                                f"[Request ID: {request_id}] 🎉 All blue cards found! Winner: {game_state.gameWinner}"
+                            )
+                            game_state.chatHistory.append(
+                                ChatMessage(
+                                    sender=Role.OPERATIVE,
+                                    message=f"🎉 All blue cards found!",
+                                    team=game_state.currentTeam,
+                                    guesses=guesses,
+                                    reasoning=reasoning,
+                                )
+                            )
+                            await update_room(self, game_state, roomId)
+                            break
+
+                        if card.color == "assassin":
+                            choose_assasin = True
+                            game_state.gameWinner = (
+                                TeamColor.RED
+                                if game_state.currentTeam == TeamColor.BLUE
+                                else TeamColor.BLUE
+                            )
+                            resetAnimations(self, game_state.cards)
+                            end_reason = "assassin"
+                            bt.logging.info(
+                                f"[Request ID: {request_id}] 💀 Assassin card '{card.word}' found! Game over. Winner: {game_state.gameWinner} (Room ID: {roomId})"
+                            )
+                            game_state.chatHistory.append(
+                                ChatMessage(
+                                    sender=Role.OPERATIVE,
+                                    message=f"💀 Assassin card '{card.word}' found! Game over.",
+                                    team=game_state.currentTeam,
+                                    guesses=guesses,
+                                    reasoning=reasoning,
+                                )
+                            )
+                            await update_room(self, game_state, roomId)
+                            break
+
+                        if card.color != game_state.currentTeam.value:
+                            # If the card is not of our team color, we break
+                            # This is to ensure that the operative only guesses cards of their team color
+                            bt.logging.warning(
+                                f"[Request ID: {request_id}] ❌ Card {card.word} is not of team color {game_state.currentTeam.value}, breaking."
+                            )
+                            break
+                    if choose_assasin or game_state.gameWinner is not None:
                         break
-                if choose_assasin or game_state.gameWinner is not None:
-                    break
 
-        # change the role
-        game_state.previousRole = game_state.currentRole
-        game_state.previousTeam = game_state.currentTeam
+            # change the role
+            game_state.previousRole = game_state.currentRole
+            game_state.previousTeam = game_state.currentTeam
 
-        if game_state.currentRole == Role.SPYMASTER:
-            if should_skip_turn:
+            if game_state.currentRole == Role.SPYMASTER:
+                if should_skip_turn:
+                    if game_state.currentTeam == TeamColor.RED:
+                        game_state.currentTeam = TeamColor.BLUE
+                    else:
+                        game_state.currentTeam = TeamColor.RED
+                else:
+                    game_state.currentRole = Role.OPERATIVE
+            else:
+                game_state.currentRole = Role.SPYMASTER
+                # change the team after operative moved
                 if game_state.currentTeam == TeamColor.RED:
                     game_state.currentTeam = TeamColor.BLUE
                 else:
                     game_state.currentTeam = TeamColor.RED
-            else:
-                game_state.currentRole = Role.OPERATIVE
-        else:
-            game_state.currentRole = Role.SPYMASTER
-            # change the team after operative moved
-            if game_state.currentTeam == TeamColor.RED:
-                game_state.currentTeam = TeamColor.BLUE
-            else:
-                game_state.currentTeam = TeamColor.RED
-        game_step += 1
+            game_step += 1
 
-        await update_room(self, game_state, roomId)
+            await update_room(self, game_state, roomId)
 
-    if game_step >= MAX_GAME_STEPS:
-        bt.logging.info(f"Maximum game steps reached ({game_step}). Game over!")
-        return
+        if game_step >= MAX_GAME_STEPS:
+            bt.logging.info(f"[Request ID: {request_id}] Maximum game steps reached ({game_step}). Game over!")
+            return
 
-    # Game over
-    bt.logging.info("════════════════════════════════════════════════════════════════")
-    bt.logging.info(
-        f"               🎉 GAME OVER 🏆 WINNER: {game_state.gameWinner.value.upper()} TEAM (Room ID: {roomId})               "
-    )
-    bt.logging.info(
-        "════════════════════════════════════════════════════════════════\n"
-    )
-    # Adjust the scores based on responses from miners.
-    rewards = get_rewards(
-        self,
-        competition=competition,
-        winner=game_state.gameWinner.value if game_state.gameWinner else None,
-        red_team=red_team,
-        blue_team=blue_team,
-        end_reason=end_reason,
-        current_team=game_state.currentTeam,
-        current_role=game_state.currentRole,
-    )
-
-    bt.logging.info(f"Scored responses: {rewards}")
-
-    rewards_list = rewards.tolist() if hasattr(rewards, "tolist") else list(rewards)
-
-    def _score_at(index: int) -> float:
-        return float(rewards_list[index]) if index < len(rewards_list) else 0.0
-
-    try:
-        await self.score_store.upload_score(
-            room_id=roomId,
-            competition=competition.value,
-            rs=rs_hotkey,
-            ro=ro_hotkey,
-            bs=bs_hotkey,
-            bo=bo_hotkey,
-            score_rs=_score_at(0),
-            score_ro=_score_at(1),
-            score_bs=_score_at(2),
-            score_bo=_score_at(3),
-            reason=end_reason,
+        # Game over
+        bt.logging.info(f"[Request ID: {request_id}] ════════════════════════════════════════════════════════════════")
+        bt.logging.info(
+            f"[Request ID: {request_id}]                🎉 GAME OVER 🏆 WINNER: {game_state.gameWinner.value.upper()} TEAM (Room ID: {roomId})               "
         )
-    except Exception as err:  # noqa: BLE001
-        bt.logging.error(f"Failed to persist game score {roomId}: {err}")
+        bt.logging.info(
+            f"[Request ID: {request_id}] ════════════════════════════════════════════════════════════════\n"
+        )
+        # Adjust the scores based on responses from miners.
+        rewards = get_rewards(
+            self,
+            competition=competition,
+            winner=game_state.gameWinner.value if game_state.gameWinner else None,
+            red_team=red_team,
+            blue_team=blue_team,
+            end_reason=end_reason,
+            current_team=game_state.currentTeam,
+            current_role=game_state.currentRole,
+        )
 
-    time.sleep(1)
+        bt.logging.info(f"[Request ID: {request_id}] Scored responses: {rewards}")
+
+        rewards_list = rewards.tolist() if hasattr(rewards, "tolist") else list(rewards)
+
+        def _score_at(index: int) -> float:
+            return float(rewards_list[index]) if index < len(rewards_list) else 0.0
+
+        try:
+            await self.score_store.upload_score(
+                room_id=roomId,
+                competition=competition.value,
+                rs=rs_hotkey,
+                ro=ro_hotkey,
+                bs=bs_hotkey,
+                bo=bo_hotkey,
+                score_rs=_score_at(0),
+                score_ro=_score_at(1),
+                score_bs=_score_at(2),
+                score_bo=_score_at(3),
+                reason=end_reason,
+            )
+            bt.logging.info(f"[Request ID: {request_id}] Game scores uploaded successfully.")
+        except Exception as err:  # noqa: BLE001
+            bt.logging.error(f"[Request ID: {request_id}] Failed to persist game score {roomId}: {err}")
+
+        time.sleep(1)
+    finally:
+        # Clear request ID when game session ends
+        clear_request_id()
+        if 'request_id' in locals():
+            bt.logging.debug(f"[Request ID: {request_id}] Game session completed, clearing request ID.")
