@@ -190,7 +190,7 @@ class Miner(BaseMinerNeuron):
             valid = response_dict["valid"]
             if valid is False:
                 bt.logging.warning(
-                    f"🚨 Invalid clue detected: {synapse.your_clue}, reason: {response_dict['reasoning']}"
+                    f"🚨 Invalid clue detected: {synapse.your_clue}, reason: {response_dict['reason']}"
                 )
         else:
             valid = None

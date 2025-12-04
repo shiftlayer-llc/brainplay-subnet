@@ -616,7 +616,7 @@ async def forward(self):
                     result_json = json.loads(result.output_text)
                     if result_json.get("valid") is False:
                         bt.logging.info(f"Clue check: {result_json}")
-                        return False, result_json.get("reasoning", "Invalid clue")
+                        return False, result_json.get("reason", "Invalid clue")
                 except Exception as e:  # noqa: BLE001
                     bt.logging.warning(f"Rule validation error: {e}")
 
