@@ -16,15 +16,19 @@ word_files = [
 ]
 
 
+class Game(Enum):
+    CODENAMES = "codenames"
+
+
 class Competition(Enum):
-    CLUE_COMPETITION = "clue_competition"
-    GUESS_COMPETITION = "guess_competition"
+    CODENAMES_CLUE = "codenames_clue"
+    CODENAMES_GUESS = "codenames_guess"
 
     @property
     def mechid(self) -> int:
-        if self == Competition.CLUE_COMPETITION:
+        if self == Competition.CODENAMES_CLUE:
             return 0
-        elif self == Competition.GUESS_COMPETITION:
+        elif self == Competition.CODENAMES_GUESS:
             return 1
         return None
 

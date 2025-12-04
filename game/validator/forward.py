@@ -53,7 +53,7 @@ def organize_team(self, competition, uids):
     Returns:
         tuple[dict[str, int], dict[str, int]]: The red team and the blue team
     """
-    if competition == Competition.CLUE_COMPETITION:
+    if competition == Competition.CODENAMES_CLUE:
         team1 = {"spymaster": uids[0], "operative": self.uid}
         team2 = {"spymaster": uids[1], "operative": self.uid}
     else:
@@ -75,7 +75,7 @@ def resetAnimations(self, cards):
 
 
 async def create_room(self, game_state: GameState):
-    endpoint = f"{self.backend_base}/api/v1/rooms/create"
+    endpoint = f"{self.backend_base}/api/v1/games/{self.game.value}/create"
     try:
         async with aiohttp.ClientSession() as session:
             payload = {
@@ -144,7 +144,7 @@ async def create_room(self, game_state: GameState):
 
 
 async def update_room(self, game_state: GameState, roomId):
-    endpoint = f"{self.backend_base}/api/v1/rooms/{roomId}"
+    endpoint = f"{self.backend_base}/api/v1/games/{self.game.value}/{roomId}"
     try:
         async with aiohttp.ClientSession() as session:
             payload = {
@@ -156,7 +156,7 @@ async def update_room(self, game_state: GameState, roomId):
                         "color": (
                             card.color
                             if (game_state.gameWinner or card.is_revealed)
-                            or game_state.competition == Competition.CLUE_COMPETITION
+                            or game_state.competition == Competition.CODENAMES_CLUE
                             else "-"
                         ),
                         "isRevealed": card.is_revealed,
@@ -231,7 +231,7 @@ async def update_room(self, game_state: GameState, roomId):
 
 async def remove_room(self, roomId):
     # return
-    endpoint = f"{self.backend_base}/api/v1/rooms/{roomId}"
+    endpoint = f"{self.backend_base}/api/v1/games/{self.game.value}/{roomId}"
     try:
         async with aiohttp.ClientSession() as session:
             headers = self.build_signed_headers()
@@ -314,24 +314,16 @@ async def get_llm_response(synapse: GameSynapse) -> GameSynapseOutput:
         if response_str:
             break
         retry += 1
-    response_dict = json.loads(response_str)
-    if "clue" in response_dict:
-        clue = response_dict["clue"]
-    else:
-        clue = None
-    if "number" in response_dict:
-        number = response_dict["number"]
-    else:
-        number = None
-    if "reasoning" in response_dict:
-        reasoning = response_dict["reasoning"]
-    else:
-        reasoning = None
+    try:
+        response_dict = json.loads(response_str)
+    except json.JSONDecodeError as e:
+        bt.logging.error(f"Invalid JSON in LLM response: {e}")
+        response_dict = {}
 
-    if "guesses" in response_dict:
-        guesses = response_dict["guesses"]
-    else:
-        guesses = None
+    clue = response_dict["clue"] if "clue" in response_dict else None
+    number = response_dict["number"] if "number" in response_dict else None
+    reasoning = response_dict["reasoning"] if "reasoning" in response_dict else None
+    guesses = response_dict["guesses"] if "guesses" in response_dict else None
 
     output = GameSynapseOutput(
         clue_text=clue, number=number, reasoning=reasoning, guesses=guesses
@@ -349,7 +341,7 @@ async def forward(self):
         self (bittensor.neuron.Neuron): The neuron instance containing all necessary state information for the validator.
 
     """
-    competition = self.current_competition
+    competition = self.competition
 
     # Sync any pending score records to the database
     await self.score_store.sync_scores_all()
@@ -450,9 +442,9 @@ async def forward(self):
         bt.logging.info(f"Game step {game_step + 1}")
 
         is_miner_turn = (
-            game_state.competition == Competition.CLUE_COMPETITION
+            game_state.competition == Competition.CODENAMES_CLUE
             and game_state.currentRole == Role.SPYMASTER
-            or game_state.competition == Competition.GUESS_COMPETITION
+            or game_state.competition == Competition.CODENAMES_GUESS
             and game_state.currentRole == Role.OPERATIVE
         )
 
