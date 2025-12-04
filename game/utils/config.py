@@ -251,13 +251,6 @@ def add_validator_args(cls, parser):
     )
 
     parser.add_argument(
-        "--game.interval",
-        type=str,
-        default="8 minutes",
-        help="Interval to run game",
-    )
-
-    parser.add_argument(
         "--burn_ratio",
         type=float,
         help="The ratio of burn on each weight update.",
@@ -296,10 +289,17 @@ def add_validator_args(cls, parser):
     )
 
     parser.add_argument(
-        "--game",
+        "--game.code",
         type=str,
         help="Game code used in backend paths and for competitions (e.g. 'codenames').",
         default="codenames",
+    )
+
+    parser.add_argument(
+        "--game.interval",
+        type=str,
+        default="8 minutes",
+        help="Interval to run game",
     )
 
     parser.add_argument(

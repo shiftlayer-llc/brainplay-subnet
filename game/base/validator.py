@@ -39,7 +39,7 @@ from game.base.utils.weight_utils import (
     convert_weights_and_uids_for_emit,
 )  # TODO: Replace when bittensor switches to numpy
 from game.utils.config import add_validator_args
-from game.utils.game import Competition
+from game.utils.game import Competition, Game
 from game.validator.score_store import ScoreStore
 from game.validator.scoring_config import (
     parse_interval_to_seconds,
@@ -126,7 +126,7 @@ class BaseValidatorNeuron(BaseNeuron):
         await asyncio.gather(*coroutines)
 
     def init_db(self):
-        scores_db_path = os.path.join("/tmp", f"{self.competition_code.value}.db")
+        scores_db_path = os.path.join("/tmp", f"{self.competition.value}.db")
 
         # Clear the database if the flag is set
         if getattr(self.config, "clear_db", False):
@@ -154,14 +154,16 @@ class BaseValidatorNeuron(BaseNeuron):
             pass
         bt.logging.info(f"Using backend: {self.backend_base}")
 
-        self.game_code = getattr(self.config, "game", "codenames")
-        scores_endpoint = f"{self.backend_base}/api/v1/games/{self.game_code}/score"
-        scores_fetch_endpoint = (
-            f"{self.backend_base}/api/v1/games/{self.game_code}/sync"
-        )
         self.active_miners_endpoint = (
-            f"{self.backend_base}/api/v1/games/{self.game_code}/miner/active"
+            f"{self.backend_base}/api/v1/games/{self.game.value}/miner/active"
         )
+
+        # set endpoints for scores
+        scores_endpoint = f"{self.backend_base}/api/v1/games/{self.game.value}/score"
+        scores_fetch_endpoint = (
+            f"{self.backend_base}/api/v1/games/{self.game.value}/sync"
+        )
+
         self.score_store = ScoreStore(
             scores_db_path,
             backend_url=scores_endpoint,
@@ -195,8 +197,12 @@ class BaseValidatorNeuron(BaseNeuron):
             KeyboardInterrupt: If the miner is stopped by a manual interruption.
             Exception: For unforeseen errors during the miner's operation, which are logged for diagnosis.
         """
+
+        # Init competition and game codes
         competition = Competition(self.config.competition)
-        self.competition_code = competition
+        game = Game(self.config.game.code)
+        self.competition = competition
+        self.game = game
 
         self.init_db()
 
@@ -379,10 +385,8 @@ class BaseValidatorNeuron(BaseNeuron):
             "X-Validator-Hotkey": self.wallet.hotkey.ss58_address,
             "X-Validator-Signature": signature.hex(),
             "X-Validator-Timestamp": str(timestamp),
-            "x-game-code": getattr(self, "game_code", "codenames"),
-            "x-competition-code": getattr(
-                self.competition_code, "value", "codenames_clue"
-            ),
+            "x-game-code": self.game.value or "codenames",
+            "x-competition-code": self.competition.value or "codenames_clue",
         }
 
     def __enter__(self):
@@ -444,7 +448,7 @@ class BaseValidatorNeuron(BaseNeuron):
             self._burn_weights()
             return
 
-        competition = self.competition_code
+        competition = self.competition
         weights = np.zeros(self.metagraph.n, dtype=np.float32)
         comp_value = competition.value
 

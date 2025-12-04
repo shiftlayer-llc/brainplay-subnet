@@ -16,6 +16,10 @@ word_files = [
 ]
 
 
+class Game(Enum):
+    CODENAMES = "codenames"
+
+
 class Competition(Enum):
     CODENAMES_CLUE = "codenames_clue"
     CODENAMES_GUESS = "codenames_guess"

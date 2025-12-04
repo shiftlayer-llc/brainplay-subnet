@@ -75,7 +75,7 @@ def resetAnimations(self, cards):
 
 
 async def create_room(self, game_state: GameState):
-    endpoint = f"{self.backend_base}/api/v1/games/{self.game_code}/create"
+    endpoint = f"{self.backend_base}/api/v1/games/{self.game.value}/create"
     try:
         async with aiohttp.ClientSession() as session:
             payload = {
@@ -144,7 +144,7 @@ async def create_room(self, game_state: GameState):
 
 
 async def update_room(self, game_state: GameState, roomId):
-    endpoint = f"{self.backend_base}/api/v1/games/{self.game_code}/{roomId}"
+    endpoint = f"{self.backend_base}/api/v1/games/{self.game.value}/{roomId}"
     try:
         async with aiohttp.ClientSession() as session:
             payload = {
@@ -231,7 +231,7 @@ async def update_room(self, game_state: GameState, roomId):
 
 async def remove_room(self, roomId):
     # return
-    endpoint = f"{self.backend_base}/api/v1/games/{self.game_code}/{roomId}"
+    endpoint = f"{self.backend_base}/api/v1/games/{self.game.value}/{roomId}"
     try:
         async with aiohttp.ClientSession() as session:
             headers = self.build_signed_headers()
@@ -314,24 +314,16 @@ async def get_llm_response(synapse: GameSynapse) -> GameSynapseOutput:
         if response_str:
             break
         retry += 1
-    response_dict = json.loads(response_str)
-    if "clue" in response_dict:
-        clue = response_dict["clue"]
-    else:
-        clue = None
-    if "number" in response_dict:
-        number = response_dict["number"]
-    else:
-        number = None
-    if "reasoning" in response_dict:
-        reasoning = response_dict["reasoning"]
-    else:
-        reasoning = None
+    try:
+        response_dict = json.loads(response_str)
+    except json.JSONDecodeError as e:
+        bt.logging.error(f"Invalid JSON in LLM response: {e}")
+        response_dict = {}
 
-    if "guesses" in response_dict:
-        guesses = response_dict["guesses"]
-    else:
-        guesses = None
+    clue = response_dict["clue"] if "clue" in response_dict else None
+    number = response_dict["number"] if "number" in response_dict else None
+    reasoning = response_dict["reasoning"] if "reasoning" in response_dict else None
+    guesses = response_dict["guesses"] if "guesses" in response_dict else None
 
     output = GameSynapseOutput(
         clue_text=clue, number=number, reasoning=reasoning, guesses=guesses
@@ -349,7 +341,7 @@ async def forward(self):
         self (bittensor.neuron.Neuron): The neuron instance containing all necessary state information for the validator.
 
     """
-    competition = self.competition_code
+    competition = self.competition
 
     # Sync any pending score records to the database
     await self.score_store.sync_scores_all()
