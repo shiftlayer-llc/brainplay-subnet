@@ -136,8 +136,7 @@ async def fetch_active_miners(self, competition: Competition):
     session = aiohttp.ClientSession()
     try:
         headers = self.build_signed_headers()
-        params = {}
-        params["competition"] = competition.value
+        params = {"competition": competition.value}
         async with session.get(
             self.active_miners_endpoint, headers=headers, params=params, timeout=15
         ) as resp:
@@ -161,7 +160,7 @@ async def fetch_active_miners(self, competition: Competition):
 
 async def choose_players(
     self,
-    competition: Competition = Competition.CLUE_COMPETITION,
+    competition: Competition = Competition.CODENAMES_CLUE,
     k: int = 2,
     exclude: List[int] = None,
 ) -> Tuple[List[int], List[str]]:
