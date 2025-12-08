@@ -10,7 +10,6 @@ from typing import Dict, Iterable, Optional, Sequence
 import aiohttp
 import bittensor as bt
 from game.utils.misc import parse_ts
-from game.utils.game import Competition
 
 
 class ScoreStore:
@@ -392,28 +391,13 @@ class ScoreStore:
 
         async with aiohttp.ClientSession() as session:
             payload = {
-                "red": {
-                    "spymaster": {
-                        "hotkey": rs,
-                        "score": score_rs,
-                    },
-                    "operative": {
-                        "hotkey": ro,
-                        "score": score_ro,
-                    },
-                },
-                "blue": {
-                    "spymaster": {
-                        "hotkey": bs,
-                        "score": score_bs,
-                    },
-                    "operative": {
-                        "hotkey": bo,
-                        "score": score_bo,
-                    },
-                },
+                "scores": [
+                    {"hotkey": rs, "score": score_rs},
+                    {"hotkey": ro, "score": score_ro},
+                    {"hotkey": bs, "score": score_bs},
+                    {"hotkey": bo, "score": score_bo},
+                ],
                 "reason": reason,
-                "competition": competition,
             }
             headers = self.signer() if self.signer else {}
             try:
