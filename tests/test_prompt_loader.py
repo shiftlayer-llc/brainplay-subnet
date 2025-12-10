@@ -35,7 +35,7 @@ class PromptLoaderTests(unittest.TestCase):
         # Modify the file to change mtime and content
         from pathlib import Path
 
-        prompts_dir = Path(__file__).parent.parent / "game" / "prompts"
+        prompts_dir = Path(__file__).parent.parent / "game" / "data" / "prompts"
         file_path = prompts_dir / "baseSysPrompt.txt"
 
         backup = file_path.read_text(encoding="utf-8")
