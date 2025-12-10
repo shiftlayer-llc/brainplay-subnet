@@ -65,16 +65,12 @@ class BaseValidatorNeuron(BaseNeuron):
     def __init__(self, config=None):
         super().__init__(config=config)
 
-        # Save a copy of the hotkeys to local memory.
-        self.hotkeys = copy.deepcopy(self.metagraph.hotkeys)
-
         # Dendrite lets us send messages to other nodes (axons) in the network.
         self.dendrite = bt.dendrite(wallet=self.wallet)
         bt.logging.info(f"Dendrite: {self.dendrite}")
 
         # Set up initial scoring weights for validation
         bt.logging.info("Building validation weights.")
-        self.scores = np.zeros(self.metagraph.n, dtype=np.float32)
 
         self.wandb_runs = [None, None]
         # Init sync with the network. Updates the metagraph.
@@ -556,6 +552,12 @@ class BaseValidatorNeuron(BaseNeuron):
             self._burn_weights(competition.mechid)
             return
 
+        # Set minimum weight for scored miners
+        for hotkey, score in avg_scores.items():
+            if score > 0:
+                uid = self.metagraph.hotkeys.index(hotkey)
+                weights[uid] = 0.001
+
         winner_uid = winner_uids[0]
         weights[winner_uid] = 1.0
         winner_hotkey = self.metagraph.hotkeys[winner_uid]
@@ -563,12 +565,6 @@ class BaseValidatorNeuron(BaseNeuron):
         bt.logging.info(
             f"Competition {comp_value} winner: Miner {winner_uid} Games: {counts.get(winner_hotkey, 0)}, Score: {total_scores.get(winner_hotkey, 0)}, WinRate: {(top_score * 100):.2f}%"
         )
-
-        # Set minimum weight for scored miners
-        for hotkey, score in avg_scores.items():
-            if score > 0:
-                uid = self.metagraph.hotkeys.index(hotkey)
-                weights[uid] = 0.001
 
         self._log_competition_scores(
             comp_value=comp_value,
@@ -778,41 +774,11 @@ class BaseValidatorNeuron(BaseNeuron):
         bt.logging.info(
             "Metagraph updated, re-syncing hotkeys, dendrite pool and moving averages"
         )
-        # Zero out all hotkeys that have been replaced.
-        for uid, hotkey in enumerate(self.hotkeys):
-            if hotkey != self.metagraph.hotkeys[uid]:
-                self.scores[uid] = 0  # hotkey has been replaced
-
-        # Check to see if the metagraph has changed size.
-        # If so, we need to add new hotkeys and moving averages.
-        if len(self.hotkeys) < len(self.metagraph.hotkeys):
-            # Update the size of the moving average scores.
-            new_moving_average = np.zeros((self.metagraph.n))
-            min_len = min(len(self.hotkeys), len(self.scores))
-            new_moving_average[:min_len] = self.scores[:min_len]
-            self.scores = new_moving_average
-
-        # Update the hotkeys.
-        self.hotkeys = copy.deepcopy(self.metagraph.hotkeys)
 
     def save_state(self):
         """Saves the state of the validator to a file."""
         bt.logging.info("Saving validator state.")
 
-        # Save the state of the validator to file.
-        # np.savez(
-        #     self.config.neuron.full_path + "/state.npz",
-        #     step=self.step,
-        #     scores=self.scores,
-        #     hotkeys=self.hotkeys,
-        # )
-
     def load_state(self):
         """Loads the state of the validator from a file."""
         bt.logging.info("Loading validator state.")
-
-        # Load the state of the validator from file.
-        # state = np.load(self.config.neuron.full_path + "/state.npz")
-        # self.step = state["step"]
-        # self.scores = state["scores"]
-        # self.hotkeys = state["hotkeys"]
