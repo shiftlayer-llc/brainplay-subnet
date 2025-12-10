@@ -28,6 +28,7 @@ from game.utils.prompt_loader import (
     get_rule_sys_prompt,
 )
 from game.validator.reward import get_rewards
+from game.validator.response_speed import GameResponseTracker, apply_speed_multipliers
 from game.utils.uids import choose_players
 import typing
 from game.utils.game import Competition, TParticipant
@@ -430,6 +431,7 @@ async def forward(self):
     game_state = GameState(competition=competition, participants=participants)
     end_reason = "completed"
     MAX_GAME_STEPS = 50
+    response_tracker = GameResponseTracker()
 
     # Create new room via API call
     # ===============🤞ROOM CREATE===================
@@ -548,8 +550,16 @@ async def forward(self):
                 if response or (time.time() - sent_at) > 3:
                     break
                 bt.logging.warning(f"⏳ No response from miner {to_uid} ({i+1}/3)")
+            response_time = time.time() - started_at
+            timed_out = response is None
+            response_tracker.record_response(
+                uid=to_uid,
+                hotkey=self.metagraph.hotkeys[to_uid],
+                response_time=response_time,
+                timed_out=timed_out
+            )
             bt.logging.info(
-                f"⏫ Response from miner {to_uid} took {time.time() - started_at:.2f}s"
+                f"⏫ Response from miner {to_uid} took {response_time:.2f}s"
             )
         else:
             bt.logging.info(f"⏬ Sending game query to LLM for {your_role}")
@@ -891,8 +901,9 @@ async def forward(self):
     bt.logging.info(
         "════════════════════════════════════════════════════════════════\n"
     )
+    response_tracker.log_game_summary()
     # Adjust the scores based on responses from miners.
-    rewards = get_rewards(
+    base_rewards = get_rewards(
         self,
         competition=competition,
         winner=game_state.gameWinner.value if game_state.gameWinner else None,
@@ -902,8 +913,16 @@ async def forward(self):
         current_team=game_state.currentTeam,
         current_role=game_state.currentRole,
     )
-
-    bt.logging.info(f"Scored responses: {rewards}")
+    bt.logging.info(f"Base rewards: {base_rewards}")
+    reward_uids = [rs_uid, ro_uid, bs_uid, bo_uid]
+    base_rewards_list = base_rewards.tolist() if hasattr(base_rewards, "tolist") else list(base_rewards)
+    adjusted_rewards_list = apply_speed_multipliers(
+        base_rewards=base_rewards_list,
+        uids=reward_uids,
+        tracker=response_tracker
+    )
+    rewards = base_rewards.__class__(adjusted_rewards_list) if hasattr(base_rewards, "__class__") else adjusted_rewards_list
+    bt.logging.info(f"Speed-adjusted rewards: {rewards}")
 
     rewards_list = rewards.tolist() if hasattr(rewards, "tolist") else list(rewards)
 
