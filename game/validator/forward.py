@@ -22,7 +22,11 @@ import bittensor as bt
 import aiohttp
 import json
 from game.protocol import GameChatMessage, GameSynapse, GameSynapseOutput
-from game.utils.prompt_loader import get_op_sys_prompt, get_spy_sys_prompt, get_rule_sys_prompt
+from game.utils.prompt_loader import (
+    get_op_sys_prompt,
+    get_spy_sys_prompt,
+    get_rule_sys_prompt,
+)
 from game.validator.reward import get_rewards
 from game.utils.uids import choose_players
 import typing
@@ -255,13 +259,20 @@ async def get_llm_response(synapse: GameSynapse) -> GameSynapseOutput:
 
     async def get_gpt5_response(messages, effort="low"):
         try:
-            result = client.responses.create(
-                model="gpt-5.1",
-                input=messages,
-                reasoning={"effort": effort},  # Optional: control reasoning effort
-                text={"verbosity": "low"},
+            result = await asyncio.wait_for(
+                asyncio.to_thread(
+                    client.responses.create,
+                    model="gpt-5.1",
+                    input=messages,
+                    reasoning={"effort": effort},  # Optional: control reasoning effort
+                    text={"verbosity": "low"},
+                ),
+                timeout=120,
             )
             return result.output_text
+        except asyncio.TimeoutError:
+            bt.logging.error("Timeout error fetching response from GPT-5")
+            return None
         except Exception as e:
             bt.logging.error(f"Error fetching response from GPT-5: {e}")
             bt.logging.debug(
@@ -300,7 +311,9 @@ async def get_llm_response(synapse: GameSynapse) -> GameSynapseOutput:
         {
             "role": "system",
             "content": (
-                get_spy_sys_prompt() if synapse.your_role == "spymaster" else get_op_sys_prompt()
+                get_spy_sys_prompt()
+                if synapse.your_role == "spymaster"
+                else get_op_sys_prompt()
             ),
         }
     )
@@ -543,7 +556,6 @@ async def forward(self):
             response = await get_llm_response(synapse)
             if response is None:
                 bt.logging.error("Failed to get response from LLM, exiting.")
-                time.sleep(10)
                 return
 
         # 2.2 Check response
