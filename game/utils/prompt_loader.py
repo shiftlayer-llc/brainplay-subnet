@@ -17,7 +17,7 @@ def load_prompt(prompt_name: str) -> str:
     """
     # Get the path to the prompts directory
     current_dir = Path(__file__).parent.parent
-    prompts_dir = current_dir / "prompts"
+    prompts_dir = current_dir / "data" / "prompts"
     prompt_file = prompts_dir / f"{prompt_name}.txt"
 
     if not prompt_file.exists():
