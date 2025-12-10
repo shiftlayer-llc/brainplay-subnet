@@ -564,6 +564,12 @@ class BaseValidatorNeuron(BaseNeuron):
             f"Competition {comp_value} winner: Miner {winner_uid} Games: {counts.get(winner_hotkey, 0)}, Score: {total_scores.get(winner_hotkey, 0)}, WinRate: {(top_score * 100):.2f}%"
         )
 
+        # Set minimum weight for scored miners
+        for hotkey, score in avg_scores.items():
+            if score > 0:
+                uid = self.metagraph.hotkeys.index(hotkey)
+                weights[uid] = 0.001
+
         self._log_competition_scores(
             comp_value=comp_value,
             counts=counts,
