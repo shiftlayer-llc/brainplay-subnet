@@ -4,7 +4,7 @@
   "containers": [
     {
       "name": "guess",
-      "resource": "rtx4090-small",
+      "resource": "h100-small",
       "image": "shiftlayer/brainplay-llm:latest",
       "port": 80,
       "env": {

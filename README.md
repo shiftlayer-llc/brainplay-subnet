@@ -13,6 +13,14 @@ Brainplay is a subnet of Bittensor designed to benchmark AI models through compe
 Traditional model evaluation methods can be difficult to interpret and lack visibility for general audiences. Brainplay makes AI benchmarking more accessible and entertaining by using games as the evaluation method.
 By observing AI models competing in games, users can intuitively grasp which models perform best, making AI evaluation more **transparent**, **understandable**, and **fun**.
 
+## v2.0 Overview
+
+- Uses TVM (Targon) for miner model submission and validator-side querying
+- Both miners and validators require a Targon API key
+- Miners deploy models via Targon; validators query server endpoints miners deployed via TVM
+- No long-lived miner server; validator remains CPU-only
+- Miners must have sufficient Targon credits to deploy and serve on TVM
+
 ## 🎮 Implemented & Upcoming Games
 
 - ✅ Codenames (first implemented game)
@@ -26,6 +34,9 @@ By observing AI models competing in games, users can intuitively grasp which mod
 For comprehensive details about Codenames, please visit: [https://en.wikipedia.org/wiki/Codenames_(board_game)](https://en.wikipedia.org/wiki/Codenames_(board_game))
 
 Official rules PDF (stored in repo): [Codenames Rules](./docs/games/codenames%20-%20rules.pdf)
+
+### Next upcoming competition
+- [20 Questions](https://en.wikipedia.org/wiki/20Q)
 
 
 ## Rewards mechanism
@@ -54,6 +65,8 @@ This reward system not only motivates the miners to perform better but also prov
 
 - Miners are served via TVM on Targon, so you do not need to run a long-lived miner server. Hardware requirements depend on the model you deploy to Targon, not on your local machine.
 
+- Validators query serverless endpoints via TVM and require a configured Targon API key.
+
 ### 2. **Software Requirements**
 
 - **Operating System** (Ubuntu 22.04.04+ recommended)
@@ -71,16 +84,16 @@ git clone https://github.com/shiftlayer-llc/brainplay-subnet.git
 cp .env.example .env
 ```
 
-### Configuring OpenAI and wandb keys
+### Configuring API keys
 
-Add your OpenAI API key (validator only) and wandb key (validator only) to the `.env` file before running validators:
+Add Targon API key (required for both miners and validators) to your `.env` file.
+If you're a validator, add your OpenAI API key and wandb key before running your node.
 
 ```env
+TARGON_API_KEY=your-targon-api-key # required for both miners and validators
 OPENAI_KEY=sk-your-key-here        # required for validators only
 WANDB_API_KEY=your-wandb-api-key   # required for validators only
 ```
-
-Miners deploying via TVM should set `TARGON_API_KEY` in their shell (or log in with `targon auth`) before running the deploy script below.
 
 ### Setting up a Virtual Environment
 
@@ -172,11 +185,12 @@ Set up automatic updates that keep your validator current with the latest code:
 
 ### Running Miner (TVM / Targon)
 
-This subnet uses TVM. Miners do not run `neurons/miner.py` on a server. Instead, deploy your model on Targon and commit the endpoint on-chain so validators can query it.
+v2.0 uses [TVM](https://targon.com/dashboard). Miners do not run `neurons/miner.py` on a server. Instead, deploy your model on Targon and commit the endpoint on-chain so validators can query it.
+
+Ensure your Targon account is funded with enough credits to deploy and serve your model on TVM.
 
 ```bash
-export TARGON_API_KEY=your-targon-key
-python deploy/miner.py --competition clue --model "microsoft/Phi-4-mini-reasoning" --wallet test_miner_0 --hotkey h0
+python deploy/miner.py --competition clue --model "your-hf-repo" --wallet test_miner_0 --hotkey h0
 ```
 
 If you also want to serve the other role, run the deploy again with `--competition guess`. Use `--sglang-extra-args` if your model needs extra SGLang flags.

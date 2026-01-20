@@ -4,11 +4,15 @@ import json
 import os
 import sys
 from pathlib import Path
+from dotenv import load_dotenv
 
 import bittensor as bt
 from targon.cli.auth import get_stored_key
 from targon.client.client import Client
 from targon.utils.config_parser import load_config, config_to_serverless_requests
+
+
+load_dotenv()
 
 NETUID_DEFAULT = 117
 DEPLOY_DIR = Path(__file__).resolve().parent
