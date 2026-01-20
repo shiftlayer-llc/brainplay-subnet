@@ -7,6 +7,8 @@ import numpy as np
 from typing import List, Tuple
 
 from game.utils.game import Competition
+from game.utils.commit import read_endpoints
+from game.utils.targon import check_endpoints, get_metadata
 
 
 def make_available_pool(self, exclude: List[int] = None) -> List[int]:
@@ -171,18 +173,12 @@ async def choose_players(
         int(uid)
         for uid in self.metagraph.uids
         if self.metagraph.S[uid] < self.config.neuron.minimum_stake_requirement
+        or self.metagraph.S[uid] > self.config.blacklist.minimum_stake_requirement
     )
     uids_to_ping = [uid for uid in self.metagraph.uids if uid not in exclude_set]
+    targon_endpoints = read_endpoints(self, competition, uids_to_ping)
 
-    ping_successful_uids, failed_uids = await ping_uids(
-        self.dendrite, self.metagraph, uids_to_ping, timeout=30
-    )
-    retry_successful_uids, _ = await ping_uids(
-        self.dendrite, self.metagraph, failed_uids, timeout=10
-    )
-    ping_successful_uids.extend(retry_successful_uids)
-
-    ping_successful_set = {int(uid) for uid in ping_successful_uids}
+    responsive_uids = await check_endpoints(self, targon_endpoints, timeout=30)
 
     window_seconds = self.scoring_window_seconds
     window_scores = {}
@@ -215,15 +211,6 @@ async def choose_players(
     except Exception as err:  # noqa: BLE001
         bt.logging.error(f"Failed to fetch window scores: {err}")
         return [], []
-    # fetch active miners(hotkey) who joined games
-    active_miners = await fetch_active_miners(self, competition)
-    active_miners_uids = [
-        int(uid)
-        for uid in self.metagraph.uids
-        if self.metagraph.hotkeys[uid] in active_miners
-    ]
-    bt.logging.info(f"Active miners uids: {active_miners_uids}")
-    exclude_set.update(uid for uid in active_miners_uids)
 
     available_pool = make_available_pool(self, list(exclude_set))
     selected: List[int] = []
@@ -244,13 +231,8 @@ async def choose_players(
             observer_hotkeys.append(hotkey)
             exclude_set.add(uid)
 
-            if uid not in ping_successful_set:
-                bt.logging.warning(f"UID {uid} is not in successful ping set")
-                continue
-
-            score = float(window_scores.get(hotkey, 0.0))
-            if score < -1.0:
-                bt.logging.warning(f"UID {uid} has low score: {score}")
+            if uid not in responsive_uids:
+                bt.logging.warning(f"UID {uid} is not in responsive set")
                 continue
 
             selected.append(uid)
@@ -267,20 +249,11 @@ async def choose_players(
         bt.logging.error("No available miners could be selected.")
         return [], []
 
-    first_hotkey = self.metagraph.hotkeys[selected[0]]
-    # Step 2: Select second player (who has closest score to first player):
     while len(selected) < k:
         available_pool = make_available_pool_for_second_player(self, list(exclude_set))
         if not available_pool:
             bt.logging.warning("No available miners left to select from.")
             break
-        # Sort available pool by score distance to first selected player
-        available_pool.sort(
-            key=lambda uid: abs(
-                float(window_scores.get(self.metagraph.hotkeys[uid], 0.0))
-                - float(window_scores.get(first_hotkey, 0.0))
-            )
-        )
         for uid in list(available_pool):
             hotkey = self.metagraph.hotkeys[uid]
 
@@ -288,13 +261,8 @@ async def choose_players(
             observer_hotkeys.append(hotkey)
             exclude_set.add(uid)
 
-            if uid not in ping_successful_set:
-                bt.logging.warning(f"UID {uid} is not in successful ping set")
-                continue
-
-            score = float(window_scores.get(hotkey, 0.0))
-            if score < -1.0:
-                bt.logging.warning(f"UID {uid} has low score: {score}")
+            if uid not in responsive_uids:
+                bt.logging.warning(f"UID {uid} is not in responsive set")
                 continue
 
             selected.append(uid)
@@ -310,4 +278,13 @@ async def choose_players(
             f"Selected miners: {selected}, selected counts: {[self._local_counts_in_window.get(self.metagraph.hotkeys[uid], 0) for uid in selected]}"
         )
     random.shuffle(selected)
-    return selected, observer_hotkeys
+    metadata = {
+        uid: {
+            "endpoint": targon_endpoints[uid],
+            "reasoning": get_metadata(self, targon_endpoints[uid]).get(
+                "reasoning", "none"
+            ),
+        }
+        for uid in selected
+    }
+    return selected, observer_hotkeys, metadata
