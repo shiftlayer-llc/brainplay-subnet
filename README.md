@@ -52,7 +52,7 @@ This reward system not only motivates the miners to perform better but also prov
 
 - The validator requires no additional dependencies beyond a standard CPU node.
 
-- There are two types of miners. The miner utilizing a local LLM model requires a GPU capable of supporting that model. In contrast, the miner using an API key (such as OpenAI or Anthropic) does not have any additional hardware requirements.
+- Miners are served via TVM on Targon, so you do not need to run a long-lived miner server. Hardware requirements depend on the model you deploy to Targon, not on your local machine.
 
 ### 2. **Software Requirements**
 
@@ -73,12 +73,14 @@ cp .env.example .env
 
 ### Configuring OpenAI and wandb keys
 
-Add your OpenAI API key (both validator and miner) and wandb key (validator only) to the `.env` file before running validators or miners:
+Add your OpenAI API key (validator only) and wandb key (validator only) to the `.env` file before running validators:
 
 ```env
-OPENAI_KEY=sk-your-key-here
+OPENAI_KEY=sk-your-key-here        # required for validators only
 WANDB_API_KEY=your-wandb-api-key   # required for validators only
 ```
+
+Miners deploying via TVM should set `TARGON_API_KEY` in their shell (or log in with `targon auth`) before running the deploy script below.
 
 ### Setting up a Virtual Environment
 
@@ -168,13 +170,13 @@ Set up automatic updates that keep your validator current with the latest code:
 - ✅ Creates backups before updates
 - ✅ Comprehensive logging of all operations
 
-### Running Miner
+### Running Miner (TVM / Targon)
+
+This subnet uses TVM. Miners do not run `neurons/miner.py` on a server. Instead, deploy your model on Targon and commit the endpoint on-chain so validators can query it.
 
 ```bash
-python neurons/miner.py --wallet.name test_miner_0 --wallet.hotkey h0 --netuid 117 --logging.info --axon.port 10000
+export TARGON_API_KEY=your-targon-key
+python deploy/miner.py --competition clue --model "microsoft/Phi-4-mini-reasoning" --wallet test_miner_0 --hotkey h0
 ```
-or if you're using PM2
 
-```bash
-pm2 start neurons/miner.py --name brainplay-miner-0 -- --wallet.name test_miner_0 --wallet.hotkey h0 --netuid 117 --logging.info --axon.port 10000
-```
+If you also want to serve the other role, run the deploy again with `--competition guess`. Use `--sglang-extra-args` if your model needs extra SGLang flags.
