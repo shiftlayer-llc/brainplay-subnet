@@ -6,6 +6,7 @@ torch>=2
 numpy>=1
 setuptools>=68
 bittensor>=9.11.0
+git+https://github.com/manifold-inc/targon-sdk.git
 openai
 python-dotenv
 black
