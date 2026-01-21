@@ -494,7 +494,7 @@ class BaseValidatorNeuron(BaseNeuron):
                 if self.metagraph.S[uid] >= self.config.neuron.minimum_stake_requirement
             ]
         )
-        record_count_limit = median_count - 3
+        record_count_limit = int(median_count * 0.9)
         bt.logging.info(
             f"Competition {comp_value} record count limit for weight setting: {record_count_limit} (Max: {max(counts.values())}, Median: {median_count})"
         )
