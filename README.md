@@ -190,7 +190,7 @@ v2.0 uses [TVM](https://targon.com/dashboard). Miners do not run `neurons/miner.
 Ensure your Targon account is funded with enough credits to deploy and serve your model on TVM.
 
 ```bash
-python deploy/miner.py --competition clue --model "your-hf-repo" --wallet test_miner_0 --hotkey h0
+python deploy/miner.py --competition all --model "your-hf-repo" --wallet test_miner_0 --hotkey h0
 ```
 
-If you also want to serve the other role, run the deploy again with `--competition guess`. Use `--sglang-extra-args` if your model needs extra SGLang flags.
+Use `--competition clue` or `--competition guess` to deploy a single role. `--competition all` deploys once and commits the same endpoint for both competitions. Use `--sglang-extra-args` if your model needs extra SGLang flags.
