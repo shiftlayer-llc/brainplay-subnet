@@ -2,7 +2,6 @@ import random
 import time
 import aiohttp
 import bittensor as bt
-from game.api.get_query_axons import ping_uids
 import numpy as np
 from typing import List, Tuple
 
@@ -176,12 +175,14 @@ async def choose_players(
         or self.metagraph.S[uid] > self.config.blacklist.minimum_stake_requirement
     )
     uids_to_ping = [uid for uid in self.metagraph.uids if uid not in exclude_set]
+    bt.logging.info(f"Uids to ping: {uids_to_ping}")
     targon_endpoints = read_endpoints(self, competition, uids_to_ping)
+    bt.logging.info(f"Targon endpoints to ping: {targon_endpoints}")
 
     responsive_uids = await check_endpoints(self, targon_endpoints, timeout=30)
+    bt.logging.info(f"Responsive UIDs: {responsive_uids}")
 
     window_seconds = self.scoring_window_seconds
-    window_scores = {}
     self._local_counts_in_window = {}
     self._global_counts_in_window = {}
     try:
@@ -192,9 +193,6 @@ async def choose_players(
             self.subtensor.get_timestamp().timestamp() + (360 - blocks_since_epoch) * 12
         )
         since_ts = end_ts - int(window_seconds)
-        window_scores, _, _ = self.score_store.window_average_scores_by_hotkey(
-            competition.value, since_ts, end_ts
-        )
         self._local_counts_in_window, self._global_counts_in_window = (
             self.score_store.records_in_window(
                 self.wallet.hotkey.ss58_address, competition.value, since_ts, end_ts
@@ -247,7 +245,7 @@ async def choose_players(
 
     if len(selected) == 0:
         bt.logging.error("No available miners could be selected.")
-        return [], []
+        return [], [], {}
 
     while len(selected) < k:
         available_pool = make_available_pool_for_second_player(self, list(exclude_set))
@@ -281,9 +279,11 @@ async def choose_players(
     metadata = {
         uid: {
             "endpoint": targon_endpoints[uid],
-            "reasoning": get_metadata(self, targon_endpoints[uid]).get(
-                "reasoning", "none"
-            ),
+            "reasoning": (
+                await get_metadata(
+                    self, targon_endpoints[uid], self.metagraph.hotkeys[uid]
+                )
+            ).get("reasoning", "none"),
         }
         for uid in selected
     }

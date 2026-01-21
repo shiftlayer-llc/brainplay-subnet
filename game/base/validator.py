@@ -65,10 +65,6 @@ class BaseValidatorNeuron(BaseNeuron):
     def __init__(self, config=None):
         super().__init__(config=config)
 
-        # Dendrite lets us send messages to other nodes (axons) in the network.
-        self.dendrite = bt.dendrite(wallet=self.wallet)
-        bt.logging.info(f"Dendrite: {self.dendrite}")
-
         # Set up initial scoring weights for validation
         bt.logging.info("Building validation weights.")
 
@@ -198,6 +194,7 @@ class BaseValidatorNeuron(BaseNeuron):
         competition = Competition(self.config.competition)
         game = Game(self.config.game.code)
         self.competition = competition
+        self.mechid = competition.mechid
         self.game = game
 
         self.init_db()

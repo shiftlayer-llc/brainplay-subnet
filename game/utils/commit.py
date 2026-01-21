@@ -1,6 +1,7 @@
 import json
 from typing import List, Dict
 from game.utils.game import Competition
+import bittensor as bt
 
 
 def read_endpoints(self, competition: Competition, uids: List[int]) -> Dict[int, dict]:
@@ -14,8 +15,9 @@ def read_endpoints(self, competition: Competition, uids: List[int]) -> Dict[int,
     targon_endpoints = {}
     for uid in uids:
         try:
-            commit_data = self.subtensor.get_commitment(self.netuid, uid)
+            commit_data = self.subtensor.get_commitment(self.config.netuid, uid)
             targon_endpoints[uid] = json.loads(commit_data)
+            bt.logging.debug(f"UID {uid} commitment data: {targon_endpoints[uid]}")
             if not competition.value in targon_endpoints[uid]:
                 continue
             targon_endpoints[uid] = targon_endpoints[uid][competition.value]
