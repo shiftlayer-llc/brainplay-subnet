@@ -348,7 +348,7 @@ async def get_llm_response(synapse: GameSynapse) -> GameSynapseOutput:
 
 
 async def get_tvm_response(
-    _epistula_hook, synapse: GameSynapse, endpoint, reasoning
+    _epistula_hook, synapse: GameSynapse, endpoint, reasoning_effort
 ) -> GameSynapseOutput:
 
     async def _get_response(messages):
@@ -364,7 +364,7 @@ async def get_tvm_response(
                     client.chat.completions.create,
                     model="brainplay",
                     messages=messages,
-                    reasoning_effort="low",
+                    reasoning_effort=reasoning_effort,
                 ),
                 timeout=80,
             )
@@ -462,7 +462,7 @@ async def forward(self):
     if len(miner_uids) < 2:
         return
 
-    (red_team, blue_team) = organize_team(self, competition, miner_uids)
+    red_team, blue_team = organize_team(self, competition, miner_uids)
     bt.logging.info(f"\033[91mRed Team: {red_team}\033[0m")
     bt.logging.info(f"\033[94mBlue Team: {blue_team}\033[0m")
 
@@ -632,7 +632,7 @@ async def forward(self):
 
         if is_miner_turn:
             endpoint = metadata[to_uid]["endpoint"]
-            reasoning = metadata[to_uid]["reasoning"]
+            reasoning_effort = metadata[to_uid]["reasoning"]
 
             def _epistula_hook(request: httpx.Request) -> None:
                 body = request.read()
@@ -645,7 +645,7 @@ async def forward(self):
             for i in range(2):
                 sent_at = time.time()
                 response = await get_tvm_response(
-                    _epistula_hook, synapse, endpoint, reasoning
+                    _epistula_hook, synapse, endpoint, reasoning_effort
                 )
                 if response or (time.time() - sent_at) > 3:
                     break
@@ -814,7 +814,9 @@ async def forward(self):
             bt.logging.info(f"Guessed cards: {guesses}")
             if is_miner_turn and (guesses is None or len(guesses) == 0):
                 invalid_respond_counts[to_uid] += 1
-                bt.logging.info(f"⚠️ No guesses '{guesses}' provided by miner {to_uid}.")
+                bt.logging.info(
+                    f"⚠️ No guesses '{guesses}' provided by miner {to_uid}."
+                )
                 if invalid_respond_counts[to_uid] < 2:
                     # Switch turn to the other team
                     game_state.chatHistory.append(

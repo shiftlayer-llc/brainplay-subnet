@@ -10,7 +10,8 @@
       "env": {
         "MODEL": "${MODEL}",
         "SGLANG_EXTRA_ARGS": "${SGLANG_EXTRA_ARGS}",
-        "MINER_HOTKEY": "${MINER_HOTKEY}"
+        "MINER_HOTKEY": "${MINER_HOTKEY}",
+        "REASONING": "${REASONING}"
       },
       "replicas": {
         "min": 1,
