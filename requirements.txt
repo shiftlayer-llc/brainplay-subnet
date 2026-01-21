@@ -11,3 +11,4 @@ openai
 python-dotenv
 black
 wandb
+json-repair
