@@ -209,7 +209,17 @@ async def choose_players(
     except Exception as err:  # noqa: BLE001
         bt.logging.error(f"Failed to fetch window scores: {err}")
         return [], []
-
+    # Get active miners
+    active_miners = await fetch_active_miners(self, competition)
+    # Increase _global_counts_in_epoch, _global_counts_in_window for active miners
+    self._global_counts_in_epoch = {
+        hotkey: count + active_miners.count(hotkey)
+        for hotkey, count in self._global_counts_in_epoch.items()
+    }
+    self._global_counts_in_window = {
+        hotkey: count + active_miners.count(hotkey)
+        for hotkey, count in self._global_counts_in_window.items()
+    }
     available_pool = make_available_pool(self, list(exclude_set))
     selected: List[int] = []
     observer_hotkeys: List[str] = []
