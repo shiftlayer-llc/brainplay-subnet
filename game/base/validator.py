@@ -762,7 +762,7 @@ class BaseValidatorNeuron(BaseNeuron):
         previous_metagraph = copy.deepcopy(self.metagraph)
 
         # Sync the metagraph.
-        self.metagraph = self.subtensor.get_metagraph_info(
+        self.metagraph = self.subtensor.metagraph(
             self.config.netuid, mechid=self.mechid
         )
 

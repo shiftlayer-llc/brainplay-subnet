@@ -83,7 +83,7 @@ class BaseNeuron(ABC):
         self.subtensor = bt.Subtensor(config=self.config)
         competition = Competition(self.config.competition)
         self.mechid = competition.mechid
-        self.metagraph: bt.Metagraph = self.subtensor.get_metagraph_info(
+        self.metagraph: bt.Metagraph = self.subtensor.metagraph(
             self.config.netuid, mechid=self.mechid
         )
         self.last_metagraph_update = self.block
