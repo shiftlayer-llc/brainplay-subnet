@@ -270,6 +270,9 @@ class BaseValidatorNeuron(BaseNeuron):
                 # Run multiple forwards concurrently.
                 self.loop.run_until_complete(self.concurrent_forward())
 
+                # Sync metagraph and potentially set weights.
+                self.sync()
+
                 game_interval = parse_interval_to_seconds(self.config.game.interval)
                 if time.time() - started_at < game_interval:
                     bt.logging.info(
@@ -280,9 +283,6 @@ class BaseValidatorNeuron(BaseNeuron):
                 # Check if we should exit.
                 if self.should_exit:
                     break
-
-                # Sync metagraph and potentially set weights.
-                self.sync()
 
                 self.step += 1
 
