@@ -18,16 +18,16 @@
 
 # TODO(developer): Change this value when updating your code base.
 # Define the version of the template module.
-__version__ = "1.7.0"
+__version__ = "2.0.0"
 version_split = __version__.split(".")
 __spec_version__ = (
     (1000 * int(version_split[0]))
     + (10 * int(version_split[1]))
     + (1 * int(version_split[2]))
 )
+__image_hash__ = "4b9ba675ef3c8ca8b8e41dfe7636b5c72c507711befe76562d18326572efcfef"
 
 # Import all submodules.
 from . import protocol
 from . import base
 from . import validator
-from . import api

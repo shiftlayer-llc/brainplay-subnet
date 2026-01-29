@@ -24,6 +24,7 @@ from abc import ABC, abstractmethod
 
 # Sync calls set weights and also resyncs the metagraph.
 from game.utils.config import check_config, add_args, config
+from game.utils.game import Competition
 from game.utils.misc import ttl_get_block
 from game import __spec_version__ as spec_version
 import multiprocessing
@@ -50,9 +51,9 @@ class BaseNeuron(ABC):
     def config(cls):
         return config(cls)
 
-    subtensor: "bt.subtensor"
-    wallet: "bt.wallet"
-    metagraph: "bt.metagraph"
+    subtensor: "bt.Subtensor"
+    wallet: "bt.Wallet"
+    metagraph: "bt.Metagraph"
     spec_version: int = spec_version
 
     @property
@@ -78,9 +79,13 @@ class BaseNeuron(ABC):
         bt.logging.info("Setting up bittensor objects.")
 
         # The wallet holds the cryptographic key pairs for the miner.
-        self.wallet = bt.wallet(config=self.config)
-        self.subtensor = bt.subtensor(config=self.config)
-        self.metagraph = self.subtensor.metagraph(self.config.netuid)
+        self.wallet = bt.Wallet(config=self.config)
+        self.subtensor = bt.Subtensor(config=self.config)
+        competition = Competition(self.config.competition)
+        self.mechid = competition.mechid
+        self.metagraph: bt.Metagraph = self.subtensor.metagraph(
+            self.config.netuid, mechid=self.mechid
+        )
         self.last_metagraph_update = self.block
         bt.logging.info(f"Wallet: {self.wallet}")
         bt.logging.info(f"Subtensor: {self.subtensor}")

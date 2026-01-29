@@ -20,7 +20,6 @@ import numpy as np
 from typing import List, Dict
 import bittensor as bt
 
-
 # def reward(winner, red_team:Dict, blue_team: Dict) -> float:
 #     """
 #     Reward the miner response to the dummy request. This method returns a reward
@@ -60,7 +59,7 @@ def get_rewards(
     - np.ndarray: An array of rewards for the team members based on the game outcome.
     """
     # Penalize loser for no response
-    loser_score = -2.0 if end_reason == "no_response" else 0.0
+    loser_score = 0.0
     if winner == "red":
         if competition == Competition.CODENAMES_CLUE:
             rewards = np.array([1.0, 0, loser_score, 0.0])

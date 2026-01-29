@@ -21,6 +21,8 @@ import time
 from math import floor
 from typing import Callable, Any
 from functools import lru_cache, update_wrapper
+from json_repair import repair_json
+import json
 
 
 # LRU Cache with TTL
@@ -129,3 +131,13 @@ def parse_ts(value):
             except ValueError as exc:
                 raise ValueError(f"Invalid timestamp: {value}") from exc
     raise ValueError(f"Unsupported timestamp type: {type(value)}")
+
+
+def extract_json(text: str) -> dict:
+    # take everything from first "{" to last "}" then repair + parse
+    a = text.find("{")
+    b = text.rfind("}")
+    if a == -1 or b == -1 or b < a:
+        raise ValueError("No JSON object found")
+    candidate = text[a : b + 1]
+    return json.loads(repair_json(candidate))

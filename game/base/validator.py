@@ -65,10 +65,6 @@ class BaseValidatorNeuron(BaseNeuron):
     def __init__(self, config=None):
         super().__init__(config=config)
 
-        # Dendrite lets us send messages to other nodes (axons) in the network.
-        self.dendrite = bt.dendrite(wallet=self.wallet)
-        bt.logging.info(f"Dendrite: {self.dendrite}")
-
         # Set up initial scoring weights for validation
         bt.logging.info("Building validation weights.")
 
@@ -198,6 +194,7 @@ class BaseValidatorNeuron(BaseNeuron):
         competition = Competition(self.config.competition)
         game = Game(self.config.game.code)
         self.competition = competition
+        self.mechid = competition.mechid
         self.game = game
 
         self.init_db()
@@ -273,6 +270,9 @@ class BaseValidatorNeuron(BaseNeuron):
                 # Run multiple forwards concurrently.
                 self.loop.run_until_complete(self.concurrent_forward())
 
+                # Sync metagraph and potentially set weights.
+                self.sync()
+
                 game_interval = parse_interval_to_seconds(self.config.game.interval)
                 if time.time() - started_at < game_interval:
                     bt.logging.info(
@@ -283,9 +283,6 @@ class BaseValidatorNeuron(BaseNeuron):
                 # Check if we should exit.
                 if self.should_exit:
                     break
-
-                # Sync metagraph and potentially set weights.
-                self.sync()
 
                 self.step += 1
 
@@ -497,7 +494,7 @@ class BaseValidatorNeuron(BaseNeuron):
                 if self.metagraph.S[uid] >= self.config.neuron.minimum_stake_requirement
             ]
         )
-        record_count_limit = median_count - 3
+        record_count_limit = int(median_count * 0.9)
         bt.logging.info(
             f"Competition {comp_value} record count limit for weight setting: {record_count_limit} (Max: {max(counts.values())}, Median: {median_count})"
         )
@@ -765,7 +762,9 @@ class BaseValidatorNeuron(BaseNeuron):
         previous_metagraph = copy.deepcopy(self.metagraph)
 
         # Sync the metagraph.
-        self.metagraph.sync(subtensor=self.subtensor)
+        self.metagraph = self.subtensor.metagraph(
+            self.config.netuid, mechid=self.mechid
+        )
 
         # Check if the metagraph axon info has changed.
         if previous_metagraph.axons == self.metagraph.axons:

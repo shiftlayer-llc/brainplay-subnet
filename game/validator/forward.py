@@ -21,12 +21,17 @@ import time
 import bittensor as bt
 import aiohttp
 import json
+
+import httpx
 from game.protocol import GameChatMessage, GameSynapse, GameSynapseOutput
+from game.utils.epistula import generate_header
+from game.utils.misc import extract_json
 from game.utils.prompt_loader import (
     get_op_sys_prompt,
     get_spy_sys_prompt,
     get_rule_sys_prompt,
 )
+from game.utils.targon import get_metadata
 from game.validator.reward import get_rewards
 from game.utils.uids import choose_players
 import typing
@@ -342,6 +347,99 @@ async def get_llm_response(synapse: GameSynapse) -> GameSynapseOutput:
     return output
 
 
+async def get_tvm_response(
+    _epistula_hook, synapse: GameSynapse, endpoint, reasoning_effort
+) -> GameSynapseOutput:
+
+    async def _get_response(messages):
+        try:
+            http_client = httpx.Client(event_hooks={"request": [_epistula_hook]})
+            client = OpenAI(
+                api_key="",
+                base_url=f"https://{endpoint}.serverless.targon.com/v1",
+                http_client=http_client,
+            )
+            result = await asyncio.wait_for(
+                asyncio.to_thread(
+                    client.chat.completions.create,
+                    model="brainplay",
+                    messages=messages,
+                    reasoning_effort=reasoning_effort,
+                ),
+                timeout=80,
+            )
+            bt.logging.debug(f"TVM response: {result.choices[0].message.content}")
+            return result.choices[0].message.content, False
+        except asyncio.TimeoutError:
+            bt.logging.error("Timeout error fetching response from TVM")
+            return None, False
+        except Exception as e:
+            bt.logging.error(f"Error fetching response from TVM: {e}")
+            bt.logging.debug(f"Messages sent to TVM: {json.dumps(messages, indent=2)}")
+            return None, True
+
+    # Build board and clue strings outside the f-string to avoid backslash-in-expression errors.
+    messages = []
+    if synapse.your_role == "operative":
+        board = [
+            {
+                "word": card.word,
+                "isRevealed": card.is_revealed,
+                "color": card.color if card.is_revealed else None,
+            }
+            for card in synapse.cards
+        ]
+        clue_block = f"Your Clue: {synapse.your_clue}\nNumber: {synapse.your_number}"
+    else:
+        board = synapse.cards
+        clue_block = ""
+
+    userPrompt = f"""
+    ### Current Game State
+    Your Team: {synapse.your_team}
+    Your Role: {synapse.your_role}
+    Red Cards Left to Guess: {synapse.remaining_red}
+    Blue Cards Left to Guess: {synapse.remaining_blue}
+
+    Board: {board}
+
+    {clue_block}"""
+    messages = []
+    messages.append(
+        {
+            "role": "system",
+            "content": (
+                get_spy_sys_prompt()
+                if synapse.your_role == "spymaster"
+                else get_op_sys_prompt()
+            ),
+        }
+    )
+    messages.append({"role": "user", "content": userPrompt})
+
+    retry = 0
+    while retry < 2:
+        response_str, should_retry = await _get_response(messages)
+        if response_str or not should_retry:
+            break
+        retry += 1
+    try:
+        response_dict = extract_json(response_str)
+    except Exception as e:
+        bt.logging.error(f"Invalid JSON in LLM response: {e}")
+        response_dict = {}
+
+    clue = response_dict["clue"] if "clue" in response_dict else None
+    number = response_dict["number"] if "number" in response_dict else None
+    reasoning = response_dict["reasoning"] if "reasoning" in response_dict else None
+    guesses = response_dict["guesses"] if "guesses" in response_dict else None
+
+    output = GameSynapseOutput(
+        clue_text=clue, number=number, reasoning=reasoning, guesses=guesses
+    )
+    return output
+
+
 async def forward(self):
     """
     This method is invoked by the validator at each time step.
@@ -357,14 +455,14 @@ async def forward(self):
     # Sync any pending score records to the database
     await self.score_store.sync_scores_all()
 
-    miner_uids, observer_hotkeys = await choose_players(
+    miner_uids, observer_hotkeys, metadata = await choose_players(
         self, competition=competition, k=2
     )
     # Exception handling when number of miners less than 2
     if len(miner_uids) < 2:
         return
 
-    (red_team, blue_team) = organize_team(self, competition, miner_uids)
+    red_team, blue_team = organize_team(self, competition, miner_uids)
     bt.logging.info(f"\033[91mRed Team: {red_team}\033[0m")
     bt.logging.info(f"\033[94mBlue Team: {blue_team}\033[0m")
 
@@ -533,21 +631,25 @@ async def forward(self):
         response = None
 
         if is_miner_turn:
-            axon = self.metagraph.axons[to_uid]
-            bt.logging.info(
-                f"⏬ Sending game query to miner {to_uid}, ({axon.ip}:{axon.port}, {axon.hotkey})"
-            )
-            for i in range(3):
+            endpoint = metadata[to_uid]["endpoint"]
+            reasoning_effort = metadata[to_uid]["reasoning"]
+
+            def _epistula_hook(request: httpx.Request) -> None:
+                body = request.read()
+                headers = generate_header(
+                    self.wallet.hotkey, body, signed_for=self.metagraph.hotkeys[to_uid]
+                )
+                for key, value in headers.items():
+                    request.headers[key] = value
+
+            for i in range(2):
                 sent_at = time.time()
-                response = await self.dendrite(
-                    axons=axon,
-                    synapse=synapse,
-                    deserialize=True,
-                    timeout=30,
+                response = await get_tvm_response(
+                    _epistula_hook, synapse, endpoint, reasoning_effort
                 )
                 if response or (time.time() - sent_at) > 3:
                     break
-                bt.logging.warning(f"⏳ No response from miner {to_uid} ({i+1}/3)")
+                bt.logging.warning(f"⏳ No response from miner {to_uid} ({i+1}/2)")
             bt.logging.info(
                 f"⏫ Response from miner {to_uid} took {time.time() - started_at:.2f}s"
             )
@@ -712,7 +814,9 @@ async def forward(self):
             bt.logging.info(f"Guessed cards: {guesses}")
             if is_miner_turn and (guesses is None or len(guesses) == 0):
                 invalid_respond_counts[to_uid] += 1
-                bt.logging.info(f"⚠️ No guesses '{guesses}' provided by miner {to_uid}.")
+                bt.logging.info(
+                    f"⚠️ No guesses '{guesses}' provided by miner {to_uid}."
+                )
                 if invalid_respond_counts[to_uid] < 2:
                     # Switch turn to the other team
                     game_state.chatHistory.append(

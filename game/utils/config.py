@@ -139,11 +139,13 @@ def add_args(cls, parser):
         help="Notes to add to the wandb run.",
         default="",
     )
-    # parser.add_argument(
-    #         "--axon.port",
-    #         type=str,
-    #         help="Port to serve the axon on.",
-    #     )
+
+    parser.add_argument(
+        "--blacklist.minimum_stake_requirement",
+        type=int,
+        help="Minimum amount of stake needed to send request to miners.",
+        default=20_000,
+    )
 
 
 def add_miner_args(cls, parser):
@@ -168,12 +170,6 @@ def add_miner_args(cls, parser):
         action="store_true",
         help="If set, miners will accept queries from non registered entities. (Dangerous!)",
         default=False,
-    )
-    parser.add_argument(
-        "--blacklist.minimum_stake_requirement",
-        type=int,
-        help="Minimum amount of stake needed to send request to miners.",
-        default=10_000,
     )
 
     parser.add_argument(
@@ -254,7 +250,7 @@ def add_validator_args(cls, parser):
         "--burn_ratio",
         type=float,
         help="The ratio of burn on each weight update.",
-        default=0.95,
+        default=1,
     )
 
     parser.add_argument(
@@ -298,7 +294,7 @@ def add_validator_args(cls, parser):
     parser.add_argument(
         "--game.interval",
         type=str,
-        default="8 minutes",
+        default="1 minutes",
         help="Interval to run game",
     )
 
@@ -315,9 +311,9 @@ def config(cls):
     Returns the configuration object specific to this miner or validator after adding relevant arguments.
     """
     parser = argparse.ArgumentParser()
-    bt.wallet.add_args(parser)
-    bt.subtensor.add_args(parser)
+    bt.Wallet.add_args(parser)
+    bt.Subtensor.add_args(parser)
     bt.logging.add_args(parser)
-    bt.axon.add_args(parser)
+    bt.logging.on()
     cls.add_args(parser)
-    return bt.config(parser)
+    return bt.Config(parser)
