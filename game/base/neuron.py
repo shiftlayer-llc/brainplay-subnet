@@ -81,8 +81,11 @@ class BaseNeuron(ABC):
         # The wallet holds the cryptographic key pairs for the miner.
         self.wallet = bt.Wallet(config=self.config)
         self.subtensor = bt.Subtensor(config=self.config)
-        competition = Competition(self.config.competition)
-        self.mechid = competition.mechid
+        if self.config.competition == "main":
+            self.mechid = 0
+        else:
+            competition = Competition(self.config.competition)
+            self.mechid = competition.mechid
         self.metagraph: bt.Metagraph = self.subtensor.metagraph(
             self.config.netuid, mechid=self.mechid
         )
