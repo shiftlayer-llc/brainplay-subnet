@@ -250,7 +250,7 @@ def add_validator_args(cls, parser):
         "--burn_ratio",
         type=float,
         help="The ratio of burn on each weight update.",
-        default=1,
+        default=0.95,
     )
 
     parser.add_argument(
