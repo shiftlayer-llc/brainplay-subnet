@@ -85,8 +85,7 @@ class BaseValidatorNeuron(BaseNeuron):
         self.should_exit: bool = False
         self.is_running: bool = False
         self.thread: Union[threading.Thread, None] = None
-        self.codenames_clue_process = None  # Process for clue competition
-        self.codenames_guess_process = None  # Process for guess competition
+        self.codenames_process = None  # Process for codenames competition
 
     def serve_axon(self):
         """Serve axon to enable external connections."""
@@ -323,15 +322,8 @@ class BaseValidatorNeuron(BaseNeuron):
                 args += ["--competition"]
 
                 # Initialize sub-processes for each competition
-                self.codenames_clue_process = subprocess.Popen(
-                    [python_exe, "-u", *args, Competition.CODENAMES_CLUE.value],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                )
-                time.sleep(60)  # stagger start times to avoid overload
-                self.codenames_guess_process = subprocess.Popen(
-                    [python_exe, "-u", *args, Competition.CODENAMES_GUESS.value],
+                self.codenames_process = subprocess.Popen(
+                    [python_exe, "-u", *args, Competition.CODENAMES.value],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
@@ -340,12 +332,7 @@ class BaseValidatorNeuron(BaseNeuron):
                 # Start threads and stream output from each sub-process
                 threading.Thread(
                     target=stream_output,
-                    args=("CLUE", self.codenames_clue_process),
-                    daemon=True,
-                ).start()
-                threading.Thread(
-                    target=stream_output,
-                    args=("GUESS", self.codenames_guess_process),
+                    args=("CODENAMES", self.codenames_process),
                     daemon=True,
                 ).start()
             else:
@@ -379,7 +366,7 @@ class BaseValidatorNeuron(BaseNeuron):
             "X-Validator-Signature": signature.hex(),
             "X-Validator-Timestamp": str(timestamp),
             "x-game-code": self.game.value or "codenames",
-            "x-competition-code": self.competition.value or "codenames_clue",
+            "x-competition-code": self.competition.value,
         }
 
     def __enter__(self):
@@ -404,12 +391,9 @@ class BaseValidatorNeuron(BaseNeuron):
             self.should_exit = True
             if self.config.competition == "main":
                 bt.logging.debug("Stopping competition subprocesses.")
-                if self.codenames_clue_process:
-                    self.codenames_clue_process.terminate()
-                    self.codenames_clue_process.wait(timeout=5)
-                if self.codenames_guess_process:
-                    self.codenames_guess_process.terminate()
-                    self.codenames_guess_process.wait(timeout=5)
+                if self.codenames_process:
+                    self.codenames_process.terminate()
+                    self.codenames_process.wait(timeout=5)
                 bt.logging.debug("Stopped competition subprocesses.")
             if self.thread:
                 self.thread.join(5)

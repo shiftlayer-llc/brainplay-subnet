@@ -21,15 +21,12 @@ class Game(Enum):
 
 
 class Competition(Enum):
-    CODENAMES_CLUE = "codenames_clue"
-    CODENAMES_GUESS = "codenames_guess"
+    CODENAMES = "codenames"
 
     @property
     def mechid(self) -> int:
-        if self == Competition.CODENAMES_CLUE:
+        if self == Competition.CODENAMES:
             return 0
-        elif self == Competition.CODENAMES_GUESS:
-            return 1
         return None
 
 

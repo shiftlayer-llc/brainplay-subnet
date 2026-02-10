@@ -161,7 +161,7 @@ async def fetch_active_miners(self, competition: Competition):
 
 async def choose_players(
     self,
-    competition: Competition = Competition.CODENAMES_CLUE,
+    competition: Competition,
     k: int = 2,
     exclude: List[int] = None,
 ) -> Tuple[List[int], List[str]]:
@@ -223,6 +223,15 @@ async def choose_players(
     available_pool = make_available_pool(self, list(exclude_set))
     selected: List[int] = []
     observer_hotkeys: List[str] = []
+
+    # Don't include active miner with more than 2 games
+    active_miner_uids_to_exclude = [
+        int(uid)
+        for uid in self.metagraph.uids
+        if active_miners.count(self.metagraph.hotkeys[uid]) >= 2
+    ]
+    bt.logging.info(f"Active miner uids to exclude: {active_miner_uids_to_exclude}")
+    exclude_set.update(uid for uid in active_miner_uids_to_exclude)
 
     # Step 1: Select first player:
     while len(selected) < 1 and available_pool:

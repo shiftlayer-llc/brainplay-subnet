@@ -301,7 +301,7 @@ def add_validator_args(cls, parser):
     parser.add_argument(
         "--competition",
         type=str,
-        help="Competition code (e.g. 'codenames_clue' or 'codenames_guess'). Leave empty for main validation.",
+        help="Competition code (e.g. 'codenames'). Leave empty for main validation.",
         default="main",
     )
 
