@@ -61,15 +61,9 @@ def get_rewards(
     # Penalize loser for no response
     loser_score = 0.0
     if winner == "red":
-        if competition == Competition.CODENAMES_CLUE:
-            rewards = np.array([1.0, 0, loser_score, 0.0])
-        else:  # GUESS_COMPETITION
-            rewards = np.array([0, 1.0, 0.0, loser_score])
+        rewards = np.array([1.0, 0.0, 0.0, 0.0])
     elif winner == "blue":
-        if competition == Competition.CODENAMES_CLUE:
-            rewards = np.array([loser_score, 0.0, 1.0, 0.0])
-        else:  # GUESS_COMPETITION
-            rewards = np.array([0.0, loser_score, 0.0, 1.0])
+        rewards = np.array([0.0, 0.0, 1.0, 0.0])
     else:
         rewards = np.array([0.0, 0.0, 0.0, 0.0])
 

@@ -44,13 +44,11 @@ def _ensure_typing_self() -> None:
 def _resolve_competition(value: str) -> tuple[list[str], Path, str]:
     normalized = value.strip().lower()
     config_path = DEPLOY_DIR / "codenames.json"
-    if normalized in {"clue", "codenames_clue"}:
-        return ["codenames_clue"], config_path, "codenames-clue"
-    if normalized in {"guess", "codenames_guess"}:
-        return ["codenames_guess"], config_path, "codenames-guess"
-    if normalized in {"all", "both"}:
-        return ["codenames_clue", "codenames_guess"], config_path, "codenames-all"
-    raise ValueError("competition must be one of: clue, guess, all")
+    if normalized in {"codenames"}:
+        return ["codenames"], config_path, "brainplay-codenames"
+    if normalized in {"all"}:
+        return ["codenames"], config_path, "brainplay-all"
+    raise ValueError("competition must be one of: codenames, all")
 
 
 def _get_api_key() -> str:
@@ -245,6 +243,8 @@ def _commit_endpoint(
     subtensor = bt.Subtensor(network)
     existing = _load_existing_commitment(subtensor, netuid, wallet.hotkey.ss58_address)
     print(f"ℹ️ Existing commitment data: {existing}")
+    # Filter out deprecated competitions
+    existing = {}
     for competition_key in competition_keys:
         existing[competition_key] = endpoint_uid
     data_to_str = json.dumps(existing)
@@ -262,7 +262,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--competition",
         required=True,
-        help="Competition type: clue, guess, or all.",
+        help="Competition type: codenames or all.",
     )
     parser.add_argument(
         "--model",
