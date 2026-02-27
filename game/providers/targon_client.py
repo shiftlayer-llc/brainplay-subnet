@@ -2,8 +2,12 @@ import os
 import bittensor as bt
 import asyncio
 import aiohttp
-from game.utils.epistula import generate_header
+from game.common.epistula import generate_header
 from game import __image_hash__
+
+
+def _log_yellow_info(message: str) -> None:
+    bt.logging.info(f"\033[33m{message}\033[0m")
 
 
 async def get_metadata(self, endpoint: str, hotkey: str) -> dict:
@@ -28,7 +32,7 @@ async def get_metadata(self, endpoint: str, hotkey: str) -> dict:
         return {}
 
 
-async def _check_image_hash(self, endpoint: str) -> bool:
+async def _check_image_hash(self, endpoint: str, uid: int | None = None) -> bool:
     """Checks the image hash of a Targon endpoint.
 
     Args:
@@ -51,18 +55,18 @@ async def _check_image_hash(self, endpoint: str) -> bool:
             ) as response:
                 if response.status != 200:
                     body = await response.text()
-                    bt.logging.error(
-                        "Error checking image hash for endpoint "
-                        f"{endpoint}: {response.status}, body={body}"
+                    uid_text = "?" if uid is None else str(uid)
+                    _log_yellow_info(
+                        f"{uid_text} {endpoint}: {response.status} {body}"
                     )
                     return False
                 try:
                     data = await response.json()
                 except aiohttp.ContentTypeError:
                     body = await response.text()
-                    bt.logging.error(
-                        "Error checking image hash for endpoint "
-                        f"{endpoint}: unexpected response body={body}"
+                    uid_text = "?" if uid is None else str(uid)
+                    _log_yellow_info(
+                        f"{uid_text} {endpoint}: invalid_json {body}"
                     )
                     return False
                 if "image_hash" in data:
@@ -74,7 +78,8 @@ async def _check_image_hash(self, endpoint: str) -> bool:
                     )
         return False
     except Exception as e:
-        bt.logging.error(f"Error checking image hash for endpoint {endpoint}: {e}")
+        uid_text = "?" if uid is None else str(uid)
+        _log_yellow_info(f"{uid_text} {endpoint}: exception {e}")
         return False
 
 
@@ -90,8 +95,12 @@ async def _check_metadata(self, endpoint: str, hotkey: str) -> bool:
     try:
         bt.logging.debug(f"Checking metadata for endpoint {endpoint}")
         meta = await get_metadata(self, endpoint, hotkey)
-        if meta and meta["sglang_port_open"]:
+        if isinstance(meta, dict) and meta.get("sglang_port_open"):
             return True
+        return False
+    except TypeError as e:
+        # Hide noisy malformed metadata shape errors during endpoint probing.
+        bt.logging.debug(f"Malformed metadata for endpoint {endpoint}: {e}")
         return False
     except Exception as e:
         bt.logging.error(f"Error checking metadata for endpoint {endpoint}: {e}")
@@ -101,7 +110,7 @@ async def _check_metadata(self, endpoint: str, hotkey: str) -> bool:
 async def _check_endpoint(self, uid: int, endpoint: str) -> bool:
     try:
         bt.logging.debug(f"Checking endpoint {endpoint} for UID {uid}")
-        if not await _check_image_hash(self, endpoint):
+        if not await _check_image_hash(self, endpoint, uid=uid):
             return False
         bt.logging.debug(f"Image hash check passed for endpoint {endpoint}")
         if not await _check_metadata(self, endpoint, self.metagraph.hotkeys[uid]):

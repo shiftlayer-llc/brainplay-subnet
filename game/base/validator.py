@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 import bittensor as bt
 import wandb
 
-from typing import List, Union
+from typing import List, Optional, Union
 from traceback import print_exception
 
 from game.base.neuron import BaseNeuron
@@ -38,13 +38,12 @@ from game.base.utils.weight_utils import (
     process_weights_for_netuid,
     convert_weights_and_uids_for_emit,
 )  # TODO: Replace when bittensor switches to numpy
-from game.utils.config import add_validator_args
-from game.utils.game import Competition, Game
-from game.validator.score_store import ScoreStore
-from game.validator.scoring_config import (
-    parse_interval_to_seconds,
-    SCORING_INTERVAL,
-)
+from game.core.registry import get_registry
+from game.config import add_validator_args
+from game.config.defaults import DEFAULT_SCORING_INTERVAL
+from game.storage.aggregation import parse_interval_to_seconds
+from game.storage.legacy_codenames_store import ScoreStore
+from game.plugins.codenames.game_types import Competition, Game
 from dotenv import load_dotenv
 
 load_dotenv()  # take environment variables from .env.
@@ -86,6 +85,7 @@ class BaseValidatorNeuron(BaseNeuron):
         self.is_running: bool = False
         self.thread: Union[threading.Thread, None] = None
         self.codenames_process = None  # Process for codenames competition
+        self.game_plugin = None
 
     def serve_axon(self):
         """Serve axon to enable external connections."""
@@ -116,24 +116,85 @@ class BaseValidatorNeuron(BaseNeuron):
         ]
         await asyncio.gather(*coroutines)
 
+    def _ensure_default_game_plugins_registered(self):
+        """Register built-in plugins needed for current runtime compatibility."""
+        registry = get_registry()
+        if registry.maybe_get_by_game_code("codenames") is None:
+            from game.plugins.codenames import get_codenames_plugin
+
+            registry.register(get_codenames_plugin())
+        return registry
+
+    def _resolve_game_plugin_from_config(self) -> Optional[object]:
+        """Resolve the plugin for current config (or ``None`` in main mode)."""
+        if getattr(self.config, "competition", None) == "main":
+            return None
+
+        registry = self._ensure_default_game_plugins_registered()
+        competition_code = getattr(self.config, "competition", None)
+        game_code = getattr(getattr(self.config, "game", None), "code", None)
+
+        plugin = None
+        if competition_code:
+            plugin = registry.maybe_get_by_game_code(competition_code)
+            if plugin is None:
+                try:
+                    plugin = registry.get_by_competition_code(competition_code)
+                except KeyError:
+                    plugin = None
+        if plugin is None and game_code:
+            plugin = registry.maybe_get_by_game_code(game_code)
+
+        if plugin is not None:
+            plugin.validate_config(self.config)
+        return plugin
+
+    async def forward_via_plugin(self):
+        """Dispatch one validator round through the plugin layer.
+
+        Falls back to the legacy codenames forward function if no plugin is
+        resolved, so existing behavior remains available during migration.
+        """
+        plugin = self.game_plugin
+        if plugin is None:
+            plugin = self._resolve_game_plugin_from_config()
+            self.game_plugin = plugin
+
+        if plugin is None:
+            bt.logging.warning(
+                "No game plugin resolved; falling back to legacy validator forward."
+            )
+            from game.validator import forward as legacy_forward
+
+            return await legacy_forward(self)
+
+        runner = plugin.create_validator_runner(self)
+        return await runner.run_round()
+
     def init_db(self):
         scores_db_path = os.path.join("/tmp", f"{self.competition.value}.db")
 
         # Clear the database if the flag is set
         if getattr(self.config, "clear_db", False):
-            if os.path.exists(scores_db_path):
+            removed_any = False
+            for path in (
+                scores_db_path,
+                f"{scores_db_path}-wal",
+                f"{scores_db_path}-shm",
+            ):
+                if not os.path.exists(path):
+                    continue
                 try:
-                    os.remove(scores_db_path)
-                    bt.logging.info(
-                        f"Removed existing score database at {scores_db_path}"
-                    )
+                    os.remove(path)
+                    removed_any = True
+                    bt.logging.info(f"Removed existing score database file at {path}")
                 except OSError as err:
                     bt.logging.error(
-                        f"Failed to remove existing score database at {scores_db_path}: {err}"
+                        f"Failed to remove existing score database file at {path}: {err}"
                     )
-            else:
+            if not removed_any:
                 bt.logging.info(
-                    "Score database flag set but no existing file found to remove."
+                    "Score database flag set but no existing database files found to remove."
                 )
 
         # Initialize endpoints urls and game code
@@ -162,7 +223,7 @@ class BaseValidatorNeuron(BaseNeuron):
             signer=self.build_signed_headers,
         )
         self.score_store.init()
-        scoring_interval_text = SCORING_INTERVAL
+        scoring_interval_text = DEFAULT_SCORING_INTERVAL
         if hasattr(self.config, "scoring") and getattr(
             self.config.scoring, "interval", None
         ):
@@ -195,6 +256,22 @@ class BaseValidatorNeuron(BaseNeuron):
         self.competition = competition
         self.mechid = competition.mechid
         self.game = game
+        self.game_plugin = self._resolve_game_plugin_from_config()
+        if self.game_plugin is not None:
+            plugin_name = getattr(
+                self.game_plugin, "display_name", self.game_plugin.__class__.__name__
+            )
+            bt.logging.info(
+                f"Resolved game plugin: {plugin_name} "
+                f"(game={getattr(self.game_plugin, 'game_code', 'unknown')} "
+                f"competition={getattr(self.game_plugin, 'competition_code', 'unknown')} "
+                f"mechid={getattr(self.game_plugin, 'mechid', 'unknown')})"
+            )
+        else:
+            bt.logging.info(
+                f"No plugin resolved for competition={self.config.competition} "
+                "(main mode or legacy fallback)."
+            )
 
         self.init_db()
 
@@ -253,18 +330,20 @@ class BaseValidatorNeuron(BaseNeuron):
         # This loop maintains the validator's operations until intentionally stopped.
         while True:
             try:
+                self.step += 1
                 bt.logging.info(f"step({self.step}) block({self.block})")
 
-                # Check weights version and run if matches
-                weights_version = self.subtensor.get_subnet_hyperparameters(
-                    self.config.netuid
-                ).weights_version
-                if self.spec_version != weights_version:
-                    bt.logging.warning(
-                        f"Spec version {self.spec_version} does not match subnet weights version {weights_version}. Please upgrade your code."
-                    )
-                    time.sleep(12)
-                    continue
+                # Check weights version and run if matches (unless explicitly disabled).
+                if not getattr(self.config, "no_version_checking", False):
+                    weights_version = self.subtensor.get_subnet_hyperparameters(
+                        self.config.netuid
+                    ).weights_version
+                    if self.spec_version != weights_version:
+                        bt.logging.warning(
+                            f"Spec version {self.spec_version} does not match subnet weights version {weights_version}. Please upgrade your code."
+                        )
+                        time.sleep(12)
+                        continue
                 started_at = time.time()
                 # Run multiple forwards concurrently.
                 self.loop.run_until_complete(self.concurrent_forward())
@@ -282,8 +361,6 @@ class BaseValidatorNeuron(BaseNeuron):
                 # Check if we should exit.
                 if self.should_exit:
                     break
-
-                self.step += 1
 
             # If someone intentionally stops the validator, it'll safely terminate operations.
             except KeyboardInterrupt:
@@ -736,7 +813,7 @@ class BaseValidatorNeuron(BaseNeuron):
         if result is True:
             bt.logging.info(f"set_weights(mechid={mechid}) on chain successfully!")
         else:
-            bt.logging.error(f"set_weights(mechid={mechid}) failed", msg)
+            bt.logging.error(f"set_weights(mechid={mechid}) failed: {msg}")
 
     def resync_metagraph(self):
         """Resyncs the metagraph and updates the hotkeys and moving averages based on the new metagraph."""

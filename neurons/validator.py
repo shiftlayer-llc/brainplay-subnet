@@ -16,7 +16,6 @@
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
-
 import time
 
 # Bittensor
@@ -24,9 +23,6 @@ import bittensor as bt
 
 # import base validator class which takes care of most of the boilerplate
 from game.base.validator import BaseValidatorNeuron
-
-# Bittensor Validator game:
-from game.validator import forward
 
 bt.logging.on()
 
@@ -56,7 +52,7 @@ class Validator(BaseValidatorNeuron):
         - Rewarding the miners
         - Updating the scores
         """
-        return await forward(self)
+        return await self.forward_via_plugin()
 
 
 # The main function parses the configuration and runs the validator.

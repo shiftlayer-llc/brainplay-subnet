@@ -1,6 +1,6 @@
 # The MIT License (MIT)
 # Copyright © 2023 Yuma Rao
-# Copyright © 2025 ShiftLayer 
+# Copyright © 2025 ShiftLayer
 
 # Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
 # documentation files (the “Software”), to deal in the Software without restriction, including without limitation
@@ -18,7 +18,7 @@
 
 import typing
 import bittensor as bt
-from game.utils.game import CardType
+from game.plugins.codenames.models import CardType
 from pydantic import BaseModel, Field
 from game import __version__
 

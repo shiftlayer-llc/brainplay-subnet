@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 
 _PROMPT_CACHE: dict[str, str] = {}
@@ -16,8 +15,8 @@ def load_prompt(prompt_name: str) -> str:
         The content of the prompt file as a string
     """
     # Get the path to the prompts directory
-    current_dir = Path(__file__).parent.parent
-    prompts_dir = current_dir / "data" / "prompts"
+    game_root = Path(__file__).resolve().parents[2]
+    prompts_dir = game_root / "data" / "prompts"
     prompt_file = prompts_dir / f"{prompt_name}.txt"
 
     if not prompt_file.exists():
