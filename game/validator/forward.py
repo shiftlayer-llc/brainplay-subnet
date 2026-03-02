@@ -24,19 +24,19 @@ import json
 
 import httpx
 from game.protocol import GameChatMessage, GameSynapse, GameSynapseOutput
-from game.utils.epistula import generate_header
-from game.utils.misc import extract_json
-from game.utils.prompt_loader import (
+from game.common.epistula import generate_header
+from game.common.misc import extract_json
+from game.plugins.codenames.prompt_loader import (
     get_op_sys_prompt,
     get_spy_sys_prompt,
     get_rule_sys_prompt,
 )
-from game.utils.targon import get_metadata
+from game.providers.targon_client import get_metadata
 from game.validator.reward import get_rewards
-from game.utils.uids import choose_players
+from game.core.miner_selection import choose_players
 import typing
-from game.utils.game import Competition, TParticipant
-from game.utils.game import (
+from game.plugins.codenames.game_types import Competition, TParticipant
+from game.plugins.codenames.game_types import (
     GameState,
     Role,
     TeamColor,
@@ -359,8 +359,16 @@ async def forward(self):
     """
     competition = self.competition
 
-    # Sync any pending score records to the database
-    await self.score_store.sync_scores_all()
+    # Sync any pending score records to the database. Keep a long safety timeout
+    # so backend stalls are visible in logs but do not block validation forever.
+    bt.logging.info("Syncing score history from backend...")
+    try:
+        synced_rows = await asyncio.wait_for(
+            self.score_store.sync_scores_all(), timeout=600
+        )
+        bt.logging.info(f"Score history sync finished. rows_fetched={synced_rows}")
+    except asyncio.TimeoutError:
+        bt.logging.warning("Score history sync timed out after 600s; continuing round.")
 
     miner_uids, observer_hotkeys, metadata = await choose_players(
         self, competition=competition, k=2
@@ -703,9 +711,7 @@ async def forward(self):
             bt.logging.info(f"Guessed cards: {guesses}")
             if guesses is None or len(guesses) == 0:
                 invalid_respond_counts[to_uid] += 1
-                bt.logging.info(
-                    f"⚠️ No guesses '{guesses}' provided by miner {to_uid}."
-                )
+                bt.logging.info(f"⚠️ No guesses '{guesses}' provided by miner {to_uid}.")
                 if invalid_respond_counts[to_uid] < 2:
                     # Switch turn to the other team
                     game_state.chatHistory.append(

@@ -23,9 +23,9 @@ import bittensor as bt
 from abc import ABC, abstractmethod
 
 # Sync calls set weights and also resyncs the metagraph.
-from game.utils.config import check_config, add_args, config
-from game.utils.game import Competition
-from game.utils.misc import ttl_get_block
+from game.config import check_config, add_args, config
+from game.plugins.codenames.game_types import Competition
+from game.common.misc import ttl_get_block
 from game import __spec_version__ as spec_version
 import multiprocessing
 

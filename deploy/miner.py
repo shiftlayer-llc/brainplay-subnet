@@ -22,6 +22,7 @@ load_dotenv()
 
 NETUID_DEFAULT = 117
 DEPLOY_DIR = Path(__file__).resolve().parent
+PROFILES_DIR = DEPLOY_DIR / "profiles"
 META_REQUEST_TIMEOUT_SEC = 30
 META_POLL_INTERVAL_SEC = 3
 
@@ -41,14 +42,25 @@ def _ensure_typing_self() -> None:
     typing.Self = _Self
 
 
-def _resolve_competition(value: str) -> tuple[list[str], Path, str]:
+def _resolve_competition(value: str) -> tuple[str, list[str], Path, str]:
     normalized = value.strip().lower()
-    config_path = DEPLOY_DIR / "codenames.json"
-    if normalized in {"codenames"}:
-        return ["codenames"], config_path, "brainplay-codenames"
-    if normalized in {"all"}:
-        return ["codenames"], config_path, "brainplay-all"
-    raise ValueError("competition must be one of: codenames, all")
+    config_path = PROFILES_DIR / f"{normalized}.json"
+    if not config_path.exists():
+        available = sorted(p.stem for p in PROFILES_DIR.glob("*.json"))
+        raise ValueError(
+            "competition must match a profile in deploy/profiles. "
+            f"available: {', '.join(available)}"
+        )
+
+    # Keep original commit schema behavior:
+    # - commit plain JSON object of competition->endpoint
+    # - `all` keeps legacy behavior of committing under `codenames`.
+    if normalized == "all":
+        competition_keys = ["codenames"]
+    else:
+        competition_keys = [normalized]
+
+    return normalized, competition_keys, config_path, f"brainplay-{normalized}"
 
 
 def _get_api_key() -> str:
@@ -262,7 +274,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--competition",
         required=True,
-        help="Competition type: codenames or all.",
+        help="Competition/profile name under deploy/profiles (e.g. codenames, 20q, pacman, all).",
     )
     parser.add_argument(
         "--model",
@@ -321,8 +333,8 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        competition_keys, config_path, container_name = _resolve_competition(
-            args.competition
+        competition_name, competition_keys, config_path, container_name = (
+            _resolve_competition(args.competition)
         )
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
@@ -336,7 +348,7 @@ def main() -> int:
         config_path = _render_config_with_name(
             config_path,
             container_name,
-            Path("/tmp/codenames.json"),
+            Path(f"/tmp/{competition_name}.json"),
         )
     except Exception as exc:
         print(f"Failed to render config with container name: {exc}", file=sys.stderr)

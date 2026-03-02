@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import sqlite3
 import time
@@ -9,7 +10,7 @@ from typing import Dict, Iterable, Optional, Sequence
 
 import aiohttp
 import bittensor as bt
-from game.utils.misc import parse_ts
+from game.common.misc import parse_ts
 
 
 class ScoreStore:
@@ -416,7 +417,14 @@ class ScoreStore:
                         )
             except Exception as err:  # noqa: BLE001
                 bt.logging.error(f"Exception syncing score {room_id}: {err}")
-            await self.sync_scores_all(session=session)
+            try:
+                await asyncio.wait_for(
+                    self.sync_scores_all(session=session), timeout=600
+                )
+            except asyncio.TimeoutError:
+                bt.logging.warning(
+                    f"Post-upload score sync timed out after 600s for room {room_id}; continuing."
+                )
         return True
 
     async def sync_scores_all(
@@ -439,7 +447,16 @@ class ScoreStore:
                 since_id += 1
             params["since_id"] = since_id
             params["limit"] = 100
+            page_num = 0
+            total_rows_fetched = 0
+            bt.logging.info(
+                f"Starting scores_all sync: since_id={params['since_id']} limit={params['limit']}"
+            )
             while True:
+                page_num += 1
+                bt.logging.info(
+                    f"scores_all sync page {page_num}: requesting since_id={params['since_id']} limit={params['limit']}"
+                )
                 async with session.get(
                     self.fetch_url, headers=headers, params=params, timeout=15
                 ) as resp:
@@ -450,25 +467,56 @@ class ScoreStore:
                         )
                         return 0
                     payload = await resp.json(content_type=None)
-                    if not isinstance(payload["data"], list):
+                    data = payload.get("data")
+                    meta = payload.get("meta") or {}
+                    if not isinstance(data, list):
                         bt.logging.error(
                             "Unexpected payload when syncing scores_all; expected list."
                         )
-                        return
-                    self._upsert_scores_all(payload["data"])
-                    if (
-                        params["since_id"] + payload["meta"]["count"]
-                        <= payload["meta"]["total"]
-                    ):
-                        bt.logging.info(
-                            f"Synced Score: {params['since_id'] + payload['meta']['count']} / {payload['meta']['total']}"
-                        )
-                    if not payload["meta"]["has_more"]:
-                        bt.logging.info(
-                            f"Sync completed: {payload['meta']['total']} scores synced."
+                        return 0
+                    page_count = int(meta.get("count") or len(data))
+                    total_count = int(meta.get("total") or 0)
+                    has_more = bool(meta.get("has_more"))
+                    next_since_id = meta.get("next_since_id")
+                    total_rows_fetched += len(data)
+
+                    bt.logging.info(
+                        "scores_all sync page "
+                        f"{page_num}: status=200 rows={len(data)} count={page_count} "
+                        f"total={total_count} has_more={has_more} next_since_id={next_since_id}"
+                    )
+
+                    if not data and not has_more:
+                        bt.logging.info("scores_all sync: no new scores to sync.")
+                        return 0
+
+                    if not data and has_more:
+                        bt.logging.warning(
+                            "scores_all sync received empty page with has_more=true; "
+                            "stopping to avoid infinite pagination loop."
                         )
                         break
-                    params["since_id"] = payload["meta"]["next_since_id"]
+
+                    self._upsert_scores_all(data)
+                    if (params["since_id"] + page_count) <= total_count:
+                        bt.logging.info(
+                            f"Synced Score: {params['since_id'] + page_count} / {total_count}"
+                        )
+                    if not has_more:
+                        bt.logging.info(
+                            "Sync completed: "
+                            f"{total_rows_fetched} row(s) fetched in {page_num} page(s). "
+                            f"Backend total={total_count}."
+                        )
+                        return total_rows_fetched
+                    if next_since_id is None:
+                        bt.logging.warning(
+                            "scores_all sync missing next_since_id while has_more=true; "
+                            "stopping pagination."
+                        )
+                        break
+                    params["since_id"] = next_since_id
+            return total_rows_fetched
         except Exception as err:  # noqa: BLE001
             bt.logging.error(f"Exception refreshing scores_all: {err}")
             return 0

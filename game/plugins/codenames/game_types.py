@@ -1,12 +1,11 @@
 # define card type
 import hashlib
 import random
-import time
 from enum import Enum
 from typing import NamedTuple
 
 from pydantic import BaseModel
-import secrets, hashlib, random
+import secrets
 
 word_files = [
     "game/data/words/default.txt",

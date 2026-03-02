@@ -20,25 +20,8 @@ import os
 import subprocess
 import argparse
 import bittensor as bt
-from .logging import setup_events_logger
+from game.common.logging import setup_events_logger
 from game.validator.scoring_config import SCORING_INTERVAL
-
-
-def is_cuda_available():
-    try:
-        output = subprocess.check_output(["nvidia-smi", "-L"], stderr=subprocess.STDOUT)
-        if "NVIDIA" in output.decode("utf-8"):
-            return "cuda"
-    except Exception:
-        pass
-    try:
-        output = subprocess.check_output(["nvcc", "--version"]).decode("utf-8")
-        if "release" in output:
-            return "cuda"
-    except Exception:
-        pass
-    return "cpu"
-
 
 def check_config(cls, config: "bt.Config"):
     r"""Checks/validates the config namespace object."""
@@ -72,13 +55,6 @@ def add_args(cls, parser):
     """
 
     parser.add_argument("--netuid", type=int, help="Subnet netuid", default=1)
-
-    parser.add_argument(
-        "--neuron.device",
-        type=str,
-        help="Device to run on.",
-        default=is_cuda_available(),
-    )
 
     parser.add_argument(
         "--neuron.minimum_stake_requirement",

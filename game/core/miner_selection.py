@@ -1,13 +1,16 @@
 import random
-import time
 import aiohttp
 import bittensor as bt
 import numpy as np
 from typing import List, Tuple
 
-from game.utils.game import Competition
-from game.utils.commit import read_endpoints
-from game.utils.targon import check_endpoints, get_metadata
+from game.plugins.codenames.game_types import Competition
+from game.core.commitment_reader import read_endpoints
+from game.providers.targon_client import check_endpoints, get_metadata
+
+
+def _log_yellow_info(message: str) -> None:
+    bt.logging.info(f"\033[33m{message}\033[0m")
 
 
 def make_available_pool(self, exclude: List[int] = None) -> List[int]:
@@ -174,7 +177,7 @@ async def choose_players(
         if self.metagraph.S[uid] < self.config.neuron.minimum_stake_requirement
         or self.metagraph.S[uid] > self.config.blacklist.minimum_stake_requirement
     )
-    uids_to_ping = [uid for uid in self.metagraph.uids if uid not in exclude_set]
+    uids_to_ping = [int(uid) for uid in self.metagraph.uids if int(uid) not in exclude_set]
     bt.logging.info(f"Uids to ping: {uids_to_ping}")
     targon_endpoints = read_endpoints(self, competition, uids_to_ping)
     bt.logging.info(f"Targon endpoints to ping: {targon_endpoints}")
@@ -223,6 +226,7 @@ async def choose_players(
     available_pool = make_available_pool(self, list(exclude_set))
     selected: List[int] = []
     observer_hotkeys: List[str] = []
+    nonresponsive_skipped_uids: List[int] = []
 
     # Don't include active miner with more than 2 games
     active_miner_uids_to_exclude = [
@@ -249,7 +253,7 @@ async def choose_players(
             exclude_set.add(uid)
 
             if uid not in responsive_uids:
-                bt.logging.warning(f"UID {uid} is not in responsive set")
+                nonresponsive_skipped_uids.append(int(uid))
                 continue
 
             selected.append(uid)
@@ -279,7 +283,7 @@ async def choose_players(
             exclude_set.add(uid)
 
             if uid not in responsive_uids:
-                bt.logging.warning(f"UID {uid} is not in responsive set")
+                nonresponsive_skipped_uids.append(int(uid))
                 continue
 
             selected.append(uid)
@@ -294,6 +298,11 @@ async def choose_players(
         bt.logging.info(
             f"Selected miners: {selected}, selected counts: {[self._local_counts_in_window.get(self.metagraph.hotkeys[uid], 0) for uid in selected]}"
         )
+
+    if nonresponsive_skipped_uids:
+        deduped = list(dict.fromkeys(nonresponsive_skipped_uids))
+        _log_yellow_info(f"UIDs not in responsive set: {deduped}")
+
     random.shuffle(selected)
     metadata = {
         uid: {
