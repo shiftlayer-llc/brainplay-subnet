@@ -17,15 +17,19 @@ word_files = [
 
 class Game(Enum):
     CODENAMES = "codenames"
+    TWENTYQ = "20q"
 
 
 class Competition(Enum):
     CODENAMES = "codenames"
+    TWENTYQ = "20q"
 
     @property
     def mechid(self) -> int:
         if self == Competition.CODENAMES:
             return 0
+        if self == Competition.TWENTYQ:
+            return 1
         return None
 
 

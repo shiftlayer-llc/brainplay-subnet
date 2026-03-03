@@ -123,6 +123,10 @@ class BaseValidatorNeuron(BaseNeuron):
             from game.plugins.codenames import get_codenames_plugin
 
             registry.register(get_codenames_plugin())
+        if registry.maybe_get_by_game_code("20q") is None:
+            from game.plugins.twentyq import get_twentyq_plugin
+
+            registry.register(get_twentyq_plugin())
         return registry
 
     def _resolve_game_plugin_from_config(self) -> Optional[object]:
@@ -252,7 +256,13 @@ class BaseValidatorNeuron(BaseNeuron):
 
         # Init competition and game codes
         competition = Competition(self.config.competition)
-        game = Game(self.config.game.code)
+        configured_game_code = getattr(self.config.game, "code", None)
+        if competition != Competition.CODENAMES and (
+            not configured_game_code or configured_game_code == "codenames"
+        ):
+            configured_game_code = competition.value
+            self.config.game.code = configured_game_code
+        game = Game(configured_game_code)
         self.competition = competition
         self.mechid = competition.mechid
         self.game = game
