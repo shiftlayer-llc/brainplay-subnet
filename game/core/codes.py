@@ -28,9 +28,9 @@ _SUPPORTED_GAMES: Dict[str, GameCodeInfo] = {
         mechid=0,
         display_name="Codenames",
     ),
-    "20q": GameCodeInfo(
-        game_code="20q",
-        competition_code="20q",
+    "twentyq": GameCodeInfo(
+        game_code="twentyq",
+        competition_code="twentyq",
         mechid=1,
         display_name="20 Questions",
     ),

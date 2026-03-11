@@ -8,21 +8,24 @@ from game.plugins.twentyq.validator_runner import TwentyQValidatorRunner
 
 class TwentyQPlugin:
     def __init__(self) -> None:
-        info = get_game_code_info("20q")
+        info = get_game_code_info("twentyq")
         self.game_code = info.game_code
         self.competition_code = info.competition_code
         self.mechid = info.mechid
         self.display_name = info.display_name
-        self.protocol_version = "brainplay.20q@1"
+        self.protocol_version = "brainplay.twentyq@1"
 
     def validate_config(self, config) -> None:
         game_code = getattr(getattr(config, "game", None), "code", None)
         competition_code = getattr(config, "competition", None)
-        if game_code and str(game_code).lower() not in {"20q"}:
+        if game_code and str(game_code).lower() not in {"twentyq"}:
             raise ValueError(
                 f"TwentyQPlugin received incompatible game.code={game_code!r}"
             )
-        if competition_code and str(competition_code).lower() not in {"20q", "main"}:
+        if competition_code and str(competition_code).lower() not in {
+            "twentyq",
+            "main",
+        }:
             raise ValueError(
                 "TwentyQPlugin received incompatible "
                 f"competition={competition_code!r}"

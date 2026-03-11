@@ -17,12 +17,12 @@ word_files = [
 
 class Game(Enum):
     CODENAMES = "codenames"
-    TWENTYQ = "20q"
+    TWENTYQ = "twentyq"
 
 
 class Competition(Enum):
     CODENAMES = "codenames"
-    TWENTYQ = "20q"
+    TWENTYQ = "twentyq"
 
     @property
     def mechid(self) -> int:

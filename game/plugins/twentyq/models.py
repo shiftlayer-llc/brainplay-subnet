@@ -25,11 +25,11 @@ class TwentyQAttemptState(BaseModel):
 class TwentyQRoomState(BaseModel):
     room_id: str
     validator_key: str
-    competition: str = "20q"
+    competition: str = "twentyq"
     word: str
     status: str = "running"
     question_limit: int = 20
-    bonus_limit: int = 5
+    bonus_limit: int = 10
     question_count: int = 0
     participants: list[TwentyQAttemptState] = Field(default_factory=list)
     started_at: int

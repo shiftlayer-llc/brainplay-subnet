@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 import random
+import re
 import time
-from pathlib import Path
 from uuid import uuid4
 
 import bittensor as bt
@@ -33,26 +34,33 @@ from game.providers.backend_client import BackendClient
 from game.providers.judge.chutes_ai import ChutesAIJudge
 from game.providers.targon_client import check_endpoints, get_metadata
 
-WORD_FILES = (
-    "game/data/words/default.txt",
-    "game/data/words/duet.txt",
-    "game/data/words/thegamegal.txt",
-    "game/data/words/undercover.txt",
-)
-
 
 class TwentyQValidatorRunner:
     def __init__(self, validator) -> None:
         self.validator = validator
         self.max_questions = 20
-        self.max_bonus_questions = 5
+        self.max_bonus_questions = 10
         self.max_total_turns = self.max_questions + self.max_bonus_questions
+        self.word_history_size = 64
         self.judge = ChutesAIJudge()
         self.backend = BackendClient(
             base_url=self.validator.backend_base,
             signer=self.validator.build_signed_headers,
             timeout_sec=10,
         )
+        if not hasattr(self.validator, "_twentyq_recent_words"):
+            self.validator._twentyq_recent_words = deque(maxlen=self.word_history_size)
+        self._recent_words: deque[str] = self.validator._twentyq_recent_words
+        if not self.judge.api_key or not self.judge.base_url:
+            bt.logging.warning(
+                "[20Q] Judge API config missing (CHUTES_API_KEY/CHUTES_BASE_URL); "
+                "using local heuristic answers."
+            )
+        else:
+            bt.logging.info(
+                f"[20Q] Judge configured with model={self.judge.model} "
+                f"base_url={self.judge.base_url}"
+            )
 
     async def run_round(self) -> SessionResult:
         started_at = time.time()
@@ -71,9 +79,9 @@ class TwentyQValidatorRunner:
         if not selected_uids:
             now = time.time()
             return SessionResult(
-                session_id=f"20q-{uuid4().hex}",
-                game_code="20q",
-                competition_code="20q",
+                session_id=f"twentyq-{uuid4().hex}",
+                game_code="twentyq",
+                competition_code="twentyq",
                 status="skipped",
                 started_at=started_at,
                 ended_at=now,
@@ -81,9 +89,9 @@ class TwentyQValidatorRunner:
                 metadata={"reason": "no_available_miners"},
             )
 
-        secret_word = self._pick_secret_word()
+        secret_word = await self._pick_secret_word()
         room = TwentyQRoomState(
-            room_id=f"20q-{uuid4().hex}",
+            room_id=f"twentyq-{uuid4().hex}",
             validator_key=self.validator.wallet.hotkey.ss58_address,
             word=secret_word,
             started_at=int(started_at),
@@ -99,6 +107,10 @@ class TwentyQValidatorRunner:
         )
 
         await self._create_room(room)
+        bt.logging.info(
+            f"[20Q] Game created: room_id={room.room_id} "
+            f"participant_uids={selected_uids} word={room.word}"
+        )
 
         concurrency = max(
             1, min(16, int(self.validator.config.neuron.num_concurrent_forwards) * 4)
@@ -126,8 +138,8 @@ class TwentyQValidatorRunner:
         ended_at = time.time()
         return SessionResult(
             session_id=room.room_id,
-            game_code="20q",
-            competition_code="20q",
+            game_code="twentyq",
+            competition_code="twentyq",
             status=room.status,
             started_at=started_at,
             ended_at=ended_at,
@@ -158,11 +170,15 @@ class TwentyQValidatorRunner:
         if not endpoints:
             bt.logging.warning("[20Q] No committed endpoints found.")
             return [], {}
+        bt.logging.info(
+            f"[20Q] Uids with committed endpoints: {sorted(endpoints.keys())}"
+        )
 
         responsive_uids = await check_endpoints(self.validator, endpoints, timeout=30)
         if not responsive_uids:
             bt.logging.warning("[20Q] No responsive miners found.")
             return [], {}
+        bt.logging.info(f"[20Q] Available uids: {sorted(responsive_uids)}")
 
         metadata = {}
         for uid in responsive_uids:
@@ -181,21 +197,199 @@ class TwentyQValidatorRunner:
 
         return sorted(responsive_uids), metadata
 
-    def _pick_secret_word(self) -> str:
-        file_path = Path(random.choice(WORD_FILES))
-        try:
-            words = [line.strip() for line in file_path.read_text().splitlines()]
-        except Exception:
-            words = ["apple", "planet", "piano", "eagle", "river"]
-        clean_words = [w for w in words if w and " " not in w and len(w) <= 24]
-        if not clean_words:
-            clean_words = ["apple", "planet", "piano", "eagle", "river"]
-        return random.choice(clean_words).lower()
+    async def _pick_secret_word(self) -> str:
+        chosen = await self._pick_secret_word_from_chutes()
+        if chosen:
+            self._remember_secret_word(chosen)
+            return chosen
+        fallback = self._pick_secret_word_from_files()
+        self._remember_secret_word(fallback)
+        bt.logging.info(f"[20Q] Word selected by fallback list: {fallback}")
+        return fallback
+
+    async def _pick_secret_word_from_chutes(self) -> str | None:
+        if not self.judge.api_key or not self.judge.base_url:
+            return None
+
+        client = OpenAI(api_key=self.judge.api_key, base_url=self.judge.base_url)
+        rejected_words: set[str] = set(self._recent_word_set())
+        max_attempts = 8
+
+        for _ in range(max_attempts):
+            rejected_text = (
+                ", ".join(sorted(rejected_words)) if rejected_words else "none"
+            )
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "Pick exactly one 20-questions secret word.\n"
+                        "Rules:\n"
+                        "1) Must be a common noun.\n"
+                        "2) Known by most people.\n"
+                        "3) Must have clear yes/no properties.\n"
+                        "4) Not too broad.\n"
+                        "5) No trick answers.\n"
+                        "6) Singular form.\n"
+                        "7) The chosen word must remain fixed.\n"
+                        "Prefer concrete, unambiguous everyday nouns (object/animal/food/tool/place).\n"
+                        "Avoid words with multiple unrelated meanings.\n"
+                        'Return JSON only: {"word":"<single_word_noun>","reason":"<short>"}'
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        "Choose the secret word now.\n"
+                        f"Do not choose any of these rejected words: {rejected_text}"
+                    ),
+                },
+            ]
+
+            def _call():
+                kwargs = {
+                    "model": self.judge.model,
+                    "messages": messages,
+                    "max_tokens": 256,
+                    "temperature": 0.8,
+                }
+                try:
+                    return client.chat.completions.create(
+                        **kwargs,
+                        reasoning_effort="low",
+                    )
+                except TypeError:
+                    return client.chat.completions.create(**kwargs)
+
+            try:
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(_call),
+                    timeout=self.judge.timeout_sec,
+                )
+            except Exception as err:  # noqa: BLE001
+                bt.logging.debug(f"[20Q] Chutes word picker failed: {err}")
+                return None
+
+            text = ""
+            if result.choices:
+                message = result.choices[0].message
+                text = str(
+                    getattr(message, "content", "")
+                    or getattr(message, "reasoning_content", "")
+                    or getattr(message, "reasoning", "")
+                    or ""
+                )
+            if not text.strip():
+                continue
+
+            try:
+                payload = extract_json(text)
+            except Exception as err:  # noqa: BLE001
+                bt.logging.debug(f"[20Q] Chutes word picker invalid json: {err}")
+                continue
+
+            raw_word = str(payload.get("word") or "").strip().lower()
+            word = self._normalize_secret_word(raw_word)
+            if not word:
+                if raw_word:
+                    rejected_words.add(raw_word)
+                bt.logging.debug(f"[20Q] Chutes word picker invalid word: {raw_word!r}")
+                continue
+            if word in rejected_words:
+                bt.logging.debug(
+                    f"[20Q] Chutes word picker repeated rejected word: {word!r}"
+                )
+                rejected_words.add(word)
+                continue
+
+            bt.logging.info(f"[20Q] Word selected by chutes: {word}")
+            return word
+
+        return None
+
+    @staticmethod
+    def _normalize_secret_word(word: str) -> str | None:
+        candidate = (word or "").strip().lower()
+        if not candidate:
+            return None
+        if " " in candidate:
+            return None
+        if not re.fullmatch(r"[a-z][a-z-]{1,23}", candidate):
+            return None
+        too_broad = {
+            "thing",
+            "object",
+            "person",
+            "place",
+            "animal",
+            "plant",
+            "food",
+            "tool",
+            "vehicle",
+            "item",
+        }
+        if candidate in too_broad:
+            return None
+        ambiguous = {
+            "roll",
+            "shaft",
+            "second",
+            "spring",
+            "match",
+            "bat",
+            "bank",
+            "crane",
+            "seal",
+            "mole",
+            "date",
+            "jam",
+            "current",
+            "bolt",
+            "clip",
+            "light",
+            "watch",
+        }
+        if candidate in ambiguous:
+            return None
+        return candidate
+
+    def _pick_secret_word_from_files(self) -> str:
+        # Safe local fallback if chutes word generation is unavailable.
+        safe_words = [
+            "apple",
+            "bicycle",
+            "hammer",
+            "pillow",
+            "dolphin",
+            "toaster",
+            "mountain",
+            "guitar",
+            "umbrella",
+            "suitcase",
+            "airplane",
+            "notebook",
+        ]
+        recent = self._recent_word_set()
+        candidates = [word for word in safe_words if word not in recent]
+        pool = candidates or safe_words
+        fallback_word = random.choice(pool).lower()
+        normalized = self._normalize_secret_word(fallback_word)
+        if normalized:
+            return normalized
+        return "apple"
+
+    def _recent_word_set(self) -> set[str]:
+        return {str(word).strip().lower() for word in self._recent_words if word}
+
+    def _remember_secret_word(self, word: str) -> None:
+        normalized = self._normalize_secret_word(word)
+        if normalized:
+            self._recent_words.append(normalized)
 
     async def _create_room(self, room: TwentyQRoomState) -> None:
         payload = make_create_payload(room)
         try:
-            response = await self.backend.create_room("20q", payload)
+            response = await self.backend.create_room("twentyq", payload)
             if isinstance(response, dict):
                 room_id = (
                     (response.get("data") or {}).get("id")
@@ -212,17 +406,19 @@ class TwentyQValidatorRunner:
     ) -> None:
         payload = make_update_payload(room, changed)
         try:
-            await self.backend.update_room("20q", room.room_id, payload)
+            await self.backend.update_room("twentyq", room.room_id, payload)
         except Exception as err:  # noqa: BLE001
             bt.logging.debug(f"[20Q] Failed to update room {room.room_id}: {err}")
 
     async def _sync_scores(self, room: TwentyQRoomState) -> None:
         reason = "completed" if room.status == "completed" else "aborted"
-        scores = make_score_payload(room, reason=reason)["scores"]
+        score_payload = make_score_payload(room, reason=reason)
+        scores = score_payload["scores"]
+        participants = score_payload["participants"]
         try:
             await self.validator.score_store.upload_scores(
                 room_id=room.room_id,
-                competition="20q",
+                competition="twentyq",
                 scores=scores,
                 reason=reason,
             )
@@ -233,7 +429,13 @@ class TwentyQValidatorRunner:
             return
         try:
             await self.backend.score_room(
-                "20q", room.room_id, {"reason": reason, "scores": scores}
+                "twentyq",
+                room.room_id,
+                {
+                    "reason": reason,
+                    "scores": scores,
+                    "participants": participants,
+                },
             )
         except Exception as err:  # noqa: BLE001
             bt.logging.debug(
@@ -247,6 +449,10 @@ class TwentyQValidatorRunner:
         last_answer = None
 
         for turn_index in range(1, self.max_total_turns + 1):
+            bt.logging.info(
+                f"[20Q] Step start: room_id={room.room_id} uid={participant.uid} "
+                f"turn={turn_index}/{self.max_total_turns}"
+            )
             payload = TwentyQPayload(
                 room_id=room.room_id,
                 attempt_id=f"{room.room_id}:{participant.uid}",
@@ -258,12 +464,26 @@ class TwentyQValidatorRunner:
             )
             response = await self._query_miner_turn(participant, payload)
             if not response.has_action():
-                participant.invalid_turns += 1
-                if participant.invalid_turns >= 2:
-                    participant.is_finished = True
-                    participant.finish_reason = "invalid_response"
-                    break
-                continue
+                retry_response = await self._query_miner_turn(
+                    participant, payload, retry=True
+                )
+                if retry_response.has_action():
+                    response = retry_response
+                    bt.logging.info(
+                        f"[20Q] uid={participant.uid} turn={turn_index} "
+                        "recovered with retry response"
+                    )
+                else:
+                    participant.invalid_turns += 1
+                    bt.logging.info(
+                        f"[20Q] uid={participant.uid} turn={turn_index} "
+                        "empty response (no question/guess)"
+                    )
+                    if participant.invalid_turns >= 3:
+                        participant.is_finished = True
+                        participant.finish_reason = "invalid_response"
+                        break
+                    continue
 
             guess = (response.guess or "").strip().lower()
             is_correct_guess = bool(guess) and guess == room.word
@@ -274,6 +494,16 @@ class TwentyQValidatorRunner:
                 answer = await self.judge.answer(secret=room.word, question=question)
                 participant.question_count += 1
                 last_answer = answer
+                bt.logging.info(
+                    f"[20Q] uid={participant.uid} turn={turn_index} "
+                    f"question={question!r} answer={answer}"
+                )
+
+            if guess:
+                bt.logging.info(
+                    f"[20Q] uid={participant.uid} turn={turn_index} "
+                    f"guess={guess!r} correct={is_correct_guess}"
+                )
 
             turn = TwentyQTurn(
                 turn=turn_index,
@@ -305,6 +535,12 @@ class TwentyQValidatorRunner:
             participant.score = 0.0
             await self._update_room(room, [participant])
 
+        bt.logging.info(
+            f"[20Q] Attempt finished: room_id={room.room_id} uid={participant.uid} "
+            f"reason={participant.finish_reason} score={participant.score} "
+            f"questions={participant.question_count}"
+        )
+
         ended_at = time.time()
         return AttemptResult(
             miner_hotkey=participant.hotkey,
@@ -323,15 +559,18 @@ class TwentyQValidatorRunner:
         )
 
     async def _query_miner_turn(
-        self, participant: TwentyQAttemptState, payload: TwentyQPayload
+        self,
+        participant: TwentyQAttemptState,
+        payload: TwentyQPayload,
+        retry: bool = False,
     ) -> TwentyQMinerOutput:
         endpoint_url = self._endpoint_base_url(participant.endpoint)
-        history_lines = []
-        for item in payload.history[-10:]:
-            history_lines.append(f"Q{item.turn}: {item.question}")
-            history_lines.append(f"A{item.turn}: {item.answer}")
-        history_text = (
-            "\n".join(history_lines) if history_lines else "No prior questions."
+        history_text = self._format_history_text(payload.history, limit=10)
+        retry_suffix = (
+            "This is a retry because previous output was empty. "
+            "Be concise and always emit valid JSON with at least one action.\n"
+            if retry
+            else ""
         )
 
         messages = [
@@ -340,7 +579,8 @@ class TwentyQValidatorRunner:
                 "content": (
                     "You are playing 20 Questions. "
                     'Respond with JSON only: {"question": string|null, "guess": string|null, "reasoning": string|null}. '
-                    "Provide at least one of question or guess."
+                    "Provide at least one of question or guess. "
+                    "Do not repeat guesses that were already marked incorrect."
                 ),
             },
             {
@@ -349,6 +589,9 @@ class TwentyQValidatorRunner:
                     f"Turn: {payload.turn_index}/{self.max_total_turns}\n"
                     f"History:\n{history_text}\n"
                     f"Last answer: {payload.last_answer or 'none'}\n"
+                    "Use prior Q/A and prior guesses. "
+                    "Treat incorrect prior guesses as eliminated. "
+                    f"{retry_suffix}"
                     "Ask your next best yes/no question or make a direct guess."
                 ),
             },
@@ -381,10 +624,21 @@ class TwentyQValidatorRunner:
 
         try:
             result = await asyncio.wait_for(
-                asyncio.to_thread(_call_completion), timeout=80
+                asyncio.to_thread(_call_completion), timeout=(35 if retry else 80)
             )
-            content = result.choices[0].message.content if result.choices else ""
+            message = result.choices[0].message if result.choices else None
+            content = (
+                str(getattr(message, "content", "") or "")
+                or str(getattr(message, "reasoning_content", "") or "")
+                or str(getattr(message, "reasoning", "") or "")
+            )
             data = extract_json(content)
+        except asyncio.TimeoutError:
+            bt.logging.warning(
+                f"[20Q] miner query timeout for uid={participant.uid} "
+                f"turn={payload.turn_index} retry={retry}"
+            )
+            return TwentyQMinerOutput()
         except Exception as err:  # noqa: BLE001
             bt.logging.debug(
                 f"[20Q] miner query failed for uid={participant.uid}: {err}"
@@ -401,6 +655,25 @@ class TwentyQValidatorRunner:
         return TwentyQMinerOutput(
             question=question or None, guess=guess or None, reasoning=reasoning
         )
+
+    @staticmethod
+    def _format_history_text(history: list[TwentyQTurn], limit: int = 10) -> str:
+        if not history:
+            return "No prior turns."
+
+        lines: list[str] = []
+        for item in history[-limit:]:
+            if item.question and item.question != "<guess>":
+                lines.append(f"Q{item.turn}: {item.question}")
+                lines.append(f"A{item.turn}: {item.answer}")
+            if item.guess:
+                lines.append(f"G{item.turn}: {item.guess}")
+                if item.is_correct_guess is not None:
+                    lines.append(
+                        f"G{item.turn}_correct: "
+                        f"{'yes' if item.is_correct_guess else 'no'}"
+                    )
+        return "\n".join(lines) if lines else "No prior turns."
 
     @staticmethod
     def _endpoint_base_url(endpoint: str) -> str:

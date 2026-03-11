@@ -487,8 +487,12 @@ class ScoreStore:
             return True
 
         async with aiohttp.ClientSession() as session:
+            participants = [
+                {"hotkey": row["hotkey"], "score": row["score"]} for row in clean_scores
+            ]
             payload = {
                 "scores": clean_scores,
+                "participants": participants,
                 "reason": reason,
             }
             headers = self.signer() if self.signer else {}

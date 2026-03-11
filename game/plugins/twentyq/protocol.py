@@ -30,7 +30,7 @@ class TwentyQPayload(BaseModel):
     attempt_id: str
     turn_index: int
     max_questions: int = 20
-    max_bonus_questions: int = 5
+    max_bonus_questions: int = 10
     secret_hint: Optional[str] = None
     history: List[TwentyQTurn] = Field(default_factory=list)
     last_answer: Optional[str] = None

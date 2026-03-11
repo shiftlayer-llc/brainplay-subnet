@@ -48,6 +48,9 @@ def make_score_payload(
     room: TwentyQRoomState, reason: str = "completed"
 ) -> Dict[str, Any]:
     scores: List[Dict[str, Any]] = []
+    participants: List[Dict[str, Any]] = []
     for participant in room.participants:
-        scores.append({"hotkey": participant.hotkey, "score": float(participant.score)})
-    return {"reason": reason, "scores": scores}
+        entry = {"hotkey": participant.hotkey, "score": float(participant.score)}
+        scores.append(entry)
+        participants.append(entry)
+    return {"reason": reason, "scores": scores, "participants": participants}

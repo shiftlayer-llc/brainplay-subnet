@@ -56,7 +56,7 @@ def _resolve_competition(value: str) -> tuple[str, list[str], Path, str]:
     # - commit plain JSON object of competition->endpoint
     # - `all` keeps legacy behavior of committing under `codenames`.
     if normalized == "all":
-        competition_keys = ["codenames"]
+        competition_keys = ["codenames", "twentyq"]
     else:
         competition_keys = [normalized]
 
@@ -274,7 +274,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--competition",
         required=True,
-        help="Competition/profile name under deploy/profiles (e.g. codenames, 20q, pacman, all).",
+        help="Competition/profile name under deploy/profiles (e.g. codenames, twentyq, pacman, all).",
     )
     parser.add_argument(
         "--model",

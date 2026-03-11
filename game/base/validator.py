@@ -123,7 +123,7 @@ class BaseValidatorNeuron(BaseNeuron):
             from game.plugins.codenames import get_codenames_plugin
 
             registry.register(get_codenames_plugin())
-        if registry.maybe_get_by_game_code("20q") is None:
+        if registry.maybe_get_by_game_code("twentyq") is None:
             from game.plugins.twentyq import get_twentyq_plugin
 
             registry.register(get_twentyq_plugin())
@@ -205,6 +205,8 @@ class BaseValidatorNeuron(BaseNeuron):
         self.backend_base = "https://backend.shiftlayer.ai"
         try:
             if getattr(self.config.subtensor, "network", None) == "test":
+                self.backend_base = "https://dev-backend.shiftlayer.ai"
+            if getattr(self.config, "competition", None) == "twentyq":
                 self.backend_base = "https://dev-backend.shiftlayer.ai"
         except AttributeError:
             pass
@@ -447,7 +449,6 @@ class BaseValidatorNeuron(BaseNeuron):
         timestamp = int(datetime.now(tz=timezone.utc).timestamp())
         message = f"<Bytes>{timestamp}</Bytes>"
         signature = self.wallet.hotkey.sign(message)
-
         return {
             "X-Validator-Hotkey": self.wallet.hotkey.ss58_address,
             "X-Validator-Signature": signature.hex(),
