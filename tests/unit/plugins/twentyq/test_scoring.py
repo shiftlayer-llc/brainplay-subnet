@@ -21,5 +21,5 @@ def test_twentyq_scoring_placeholder_rules():
     mod = _load_twentyq_scoring_module()
     assert mod.score_twentyq_attempt(solved=True, question_index=20) == 1.0
     assert mod.score_twentyq_attempt(solved=True, question_index=21) == 0.9
-    assert mod.score_twentyq_attempt(solved=True, question_index=25) == 0.5
-    assert mod.score_twentyq_attempt(solved=False, question_index=25) == 0.0
+    assert mod.score_twentyq_attempt(solved=True, question_index=30) == 0.0
+    assert mod.score_twentyq_attempt(solved=False, question_index=30) == 0.0

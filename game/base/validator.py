@@ -123,6 +123,10 @@ class BaseValidatorNeuron(BaseNeuron):
             from game.plugins.codenames import get_codenames_plugin
 
             registry.register(get_codenames_plugin())
+        if registry.maybe_get_by_game_code("twentyq") is None:
+            from game.plugins.twentyq import get_twentyq_plugin
+
+            registry.register(get_twentyq_plugin())
         return registry
 
     def _resolve_game_plugin_from_config(self) -> Optional[object]:
@@ -202,6 +206,8 @@ class BaseValidatorNeuron(BaseNeuron):
         try:
             if getattr(self.config.subtensor, "network", None) == "test":
                 self.backend_base = "https://dev-backend.shiftlayer.ai"
+            if getattr(self.config, "competition", None) == "twentyq":
+                self.backend_base = "https://dev-backend.shiftlayer.ai"
         except AttributeError:
             pass
         bt.logging.info(f"Using backend: {self.backend_base}")
@@ -252,7 +258,13 @@ class BaseValidatorNeuron(BaseNeuron):
 
         # Init competition and game codes
         competition = Competition(self.config.competition)
-        game = Game(self.config.game.code)
+        configured_game_code = getattr(self.config.game, "code", None)
+        if competition != Competition.CODENAMES and (
+            not configured_game_code or configured_game_code == "codenames"
+        ):
+            configured_game_code = competition.value
+            self.config.game.code = configured_game_code
+        game = Game(configured_game_code)
         self.competition = competition
         self.mechid = competition.mechid
         self.game = game
@@ -437,7 +449,6 @@ class BaseValidatorNeuron(BaseNeuron):
         timestamp = int(datetime.now(tz=timezone.utc).timestamp())
         message = f"<Bytes>{timestamp}</Bytes>"
         signature = self.wallet.hotkey.sign(message)
-
         return {
             "X-Validator-Hotkey": self.wallet.hotkey.ss58_address,
             "X-Validator-Signature": signature.hex(),
