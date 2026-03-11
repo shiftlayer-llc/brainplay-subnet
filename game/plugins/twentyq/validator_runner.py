@@ -41,6 +41,8 @@ class TwentyQValidatorRunner:
         self.max_questions = 20
         self.max_bonus_questions = 10
         self.max_total_turns = self.max_questions + self.max_bonus_questions
+        self.max_create_room_attempts = 5
+        self.active_game_retry_sleep_sec = 60
         self.word_history_size = 64
         self.judge = ChutesAIJudge()
         self.backend = BackendClient(
@@ -106,7 +108,22 @@ class TwentyQValidatorRunner:
             ],
         )
 
-        await self._create_room(room)
+        created = await self._create_room(room)
+        if not created:
+            now = time.time()
+            bt.logging.warning(
+                f"[20Q] Game creation failed; skipping round for word={room.word!r}"
+            )
+            return SessionResult(
+                session_id=room.room_id,
+                game_code="twentyq",
+                competition_code="twentyq",
+                status="skipped",
+                started_at=started_at,
+                ended_at=now,
+                attempts=(),
+                metadata={"reason": "create_room_failed", "word": room.word},
+            )
         bt.logging.info(
             f"[20Q] Game created: room_id={room.room_id} "
             f"participant_uids={selected_uids} word={room.word}"
@@ -386,20 +403,53 @@ class TwentyQValidatorRunner:
         if normalized:
             self._recent_words.append(normalized)
 
-    async def _create_room(self, room: TwentyQRoomState) -> None:
+    async def _create_room(self, room: TwentyQRoomState) -> bool:
         payload = make_create_payload(room)
-        try:
-            response = await self.backend.create_room("twentyq", payload)
-            if isinstance(response, dict):
-                room_id = (
-                    (response.get("data") or {}).get("id")
-                    or response.get("id")
-                    or room.room_id
+        for attempt in range(1, self.max_create_room_attempts + 1):
+            try:
+                response = await self.backend.create_room("twentyq", payload)
+            except Exception as err:  # noqa: BLE001
+                bt.logging.warning(f"[20Q] Failed to create room on backend: {err}")
+                return False
+
+            if not isinstance(response, dict):
+                bt.logging.warning(
+                    "[20Q] Failed to create room on backend: "
+                    f"unexpected response type={type(response).__name__}"
                 )
+                return False
+
+            room_id = (response.get("data") or {}).get("id") or response.get("id")
+            if room_id:
                 room.room_id = str(room_id)
-                return
-        except Exception as err:  # noqa: BLE001
-            bt.logging.warning(f"[20Q] Failed to create room on backend: {err}")
+                return True
+
+            if (
+                self._is_active_game_exists_error(response)
+                and attempt < self.max_create_room_attempts
+            ):
+                bt.logging.info(
+                    "[20Q] Active game already exists for this validator; "
+                    f"sleeping {self.active_game_retry_sleep_sec}s before retry "
+                    f"({attempt}/{self.max_create_room_attempts})."
+                )
+                await asyncio.sleep(self.active_game_retry_sleep_sec)
+                continue
+
+            bt.logging.warning(
+                f"[20Q] Failed to create room on backend: response={response}"
+            )
+            return False
+        return False
+
+    @staticmethod
+    def _is_active_game_exists_error(response: dict) -> bool:
+        text = str(response).lower()
+        if "active game" in text and ("exist" in text or "already" in text):
+            return True
+        status = response.get("statusCode")
+        message = str(response.get("message") or "").lower()
+        return status == 409 and "active" in message
 
     async def _update_room(
         self, room: TwentyQRoomState, changed: list[TwentyQAttemptState] | None = None
@@ -642,6 +692,17 @@ class TwentyQValidatorRunner:
         except Exception as err:  # noqa: BLE001
             bt.logging.debug(
                 f"[20Q] miner query failed for uid={participant.uid}: {err}"
+            )
+            return TwentyQMinerOutput()
+
+        # Some miners may return JSON arrays/null instead of an object.
+        # Treat malformed roots as empty action rather than crashing the round.
+        if isinstance(data, list):
+            data = next((item for item in data if isinstance(item, dict)), None)
+        if not isinstance(data, dict):
+            bt.logging.debug(
+                f"[20Q] miner query non-object json for uid={participant.uid} "
+                f"turn={payload.turn_index}: {type(data).__name__}"
             )
             return TwentyQMinerOutput()
 

@@ -32,3 +32,15 @@ def test_normalize_secret_word_rules():
     assert TwentyQValidatorRunner._normalize_secret_word("roll") is None
     assert TwentyQValidatorRunner._normalize_secret_word("red apple") is None
     assert TwentyQValidatorRunner._normalize_secret_word("123") is None
+
+
+def test_active_game_error_detection():
+    assert TwentyQValidatorRunner._is_active_game_exists_error(
+        {"message": "Active game already exists for validator"}
+    )
+    assert TwentyQValidatorRunner._is_active_game_exists_error(
+        {"statusCode": 409, "message": "active room exists"}
+    )
+    assert not TwentyQValidatorRunner._is_active_game_exists_error(
+        {"statusCode": 400, "message": "validation error"}
+    )
