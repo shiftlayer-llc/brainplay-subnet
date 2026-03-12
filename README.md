@@ -185,12 +185,160 @@ Set up automatic updates that keep your validator current with the latest code:
 
 ### Running Miner (TVM / Targon)
 
-v2.0 uses [TVM](https://targon.com/dashboard). Miners do not run `neurons/miner.py` on a server. Instead, deploy your model on Targon and commit the endpoint on-chain so validators can query it.
+v2.0 miners do not run a long-lived `neurons/miner.py` process. The miner flow is:
 
-Ensure your Targon account is funded with enough credits to deploy and serve your model on TVM.
+1. Deploy a serverless model endpoint on Targon.
+2. Wait for the endpoint to become ready.
+3. Commit that endpoint UID on-chain so validators can discover and query it.
+
+The deployment/commit entrypoint is [`deploy/miner.py`](./deploy/miner.py).
+
+#### Miner prerequisites
+
+- A funded Targon account with enough credits to deploy and serve your model
+- A Bittensor wallet + hotkey registered on the subnet
+- `TARGON_API_KEY` available in `.env` or already stored via the Targon CLI
+- The repo installed with:
 
 ```bash
-python deploy/miner.py --competition all --model "your-hf-repo" --wallet test_miner_0 --hotkey h0
+pip install -e .
 ```
 
-Use `--competition clue` or `--competition guess` to deploy a single role. `--competition all` deploys once and commits the same endpoint for both competitions. Use `--sglang-extra-args` if your model needs extra SGLang flags.
+#### Basic miner command
+
+```bash
+python deploy/miner.py \
+  --competition twentyq \
+  --model "your-org/your-model" \
+  --wallet owner \
+  --hotkey default \
+  --network test \
+  --netuid 335
+```
+
+What this command does:
+
+- Reads the selected profile from `deploy/profiles/{competition}.json`
+- Injects runtime env vars such as `MODEL`, `MINER_HOTKEY`, and `REASONING`
+- Deploys one serverless container on Targon
+- Waits until the `/meta` endpoint reports the server is ready
+- Commits the endpoint UID to chain under the selected competition key(s)
+
+#### Common miner commands
+
+Deploy only for Codenames:
+
+```bash
+python deploy/miner.py \
+  --competition codenames \
+  --model "your-org/your-model" \
+  --wallet owner \
+  --hotkey default
+```
+
+Deploy only for 20 Questions:
+
+```bash
+python deploy/miner.py \
+  --competition twentyq \
+  --model "your-org/your-model" \
+  --wallet owner \
+  --hotkey default
+```
+
+Deploy one endpoint and commit it for both currently supported competitions:
+
+```bash
+python deploy/miner.py \
+  --competition all \
+  --model "your-org/your-model" \
+  --wallet owner \
+  --hotkey default
+```
+
+Pass extra SGLang flags if your model needs them:
+
+```bash
+python deploy/miner.py \
+  --competition twentyq \
+  --model "Qwen/Qwen2.5-32B-Instruct" \
+  --sglang-extra-args "--context-length 32768 --enable-torch-compile" \
+  --reasoning low \
+  --wallet owner \
+  --hotkey default
+```
+
+#### Miner CLI arguments
+
+- `--competition`: profile name under `deploy/profiles/`
+- `--model`: model name/path passed into the deployment container
+- `--sglang-extra-args`: extra SGLang server flags
+- `--reasoning`: reasoning effort metadata exposed to validators; one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`
+- `--wallet`: Bittensor wallet name
+- `--hotkey`: Bittensor hotkey name
+- `--wallet-path`: optional custom wallet directory
+- `--network`: subtensor network, for example `finney` or `test`
+- `--netuid`: subnet netuid
+- `--commit-period`: optional chain commitment period override
+
+#### Profile JSON files
+
+Miner profiles live in [`deploy/profiles/`](./deploy/profiles). Each JSON file defines the Targon serverless container spec used by `deploy/miner.py`.
+
+Current profiles include:
+
+- `deploy/profiles/codenames.json`
+- `deploy/profiles/twentyq.json`
+- `deploy/profiles/all.json`
+
+At the moment these files intentionally use the same container template. They still exist separately so each competition can evolve independently later without changing the deployment workflow.
+
+Each profile contains:
+
+- `version`: config schema version for Targon
+- `app_name`: logical app name
+- `containers`: list of containers to deploy
+- `containers[].name`: container name; `${NAME}` is filled in by `deploy/miner.py`
+- `containers[].resource`: Targon resource tier, for example `h100-small`
+- `containers[].image`: container image to run
+- `containers[].port`: exposed service port
+- `containers[].env`: runtime environment variables injected into the container
+- `containers[].replicas`: min/max replica settings and concurrency target
+
+Important env placeholders used in these JSON files:
+
+- `${NAME}`: generated container name such as `brainplay-twentyq`
+- `${MODEL}`: value passed via `--model`
+- `${SGLANG_EXTRA_ARGS}`: value passed via `--sglang-extra-args`
+- `${MINER_HOTKEY}`: hotkey SS58 address from the wallet
+- `${REASONING}`: value passed via `--reasoning`
+
+#### Difference between `codenames.json`, `twentyq.json`, and `all.json`
+
+- `codenames.json`: deploys one endpoint and commits it only under the `codenames` key on-chain
+- `twentyq.json`: deploys one endpoint and commits it only under the `twentyq` key on-chain
+- `all.json`: deploys one endpoint and commits the same endpoint under both `codenames` and `twentyq`
+
+That means `all.json` is for miners who want one shared model endpoint to serve multiple competitions. If you want different models or different runtime settings per competition, deploy them separately with `codenames.json` and `twentyq.json`.
+
+#### On-chain commitment shape
+
+The miner keeps the original plain JSON commitment format. After deployment, the committed payload looks like this:
+
+```json
+{
+  "codenames": "serv-u-xxxxxxxxxxxxxxxx",
+  "twentyq": "serv-u-yyyyyyyyyyyyyyyy"
+}
+```
+
+If you deploy with `--competition all`, both keys point to the same endpoint UID:
+
+```json
+{
+  "codenames": "serv-u-xxxxxxxxxxxxxxxx",
+  "twentyq": "serv-u-xxxxxxxxxxxxxxxx"
+}
+```
+
+Validators read this commitment from chain and pick the endpoint that matches the competition they are running.
