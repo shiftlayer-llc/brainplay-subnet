@@ -363,6 +363,34 @@ class ScoreStore:
 
         return {hotkey: int(count) for hotkey, count in rows}
 
+    def win_loss_counts_in_window(
+        self, competition: str, since_ts: float, end_ts: float
+    ) -> tuple[Dict[str, int], Dict[str, int]]:
+        """Return per-hotkey win/loss counts from miner_records in the window.
+
+        A "win" is any record with score > 0. A "loss" is score <= 0.
+        """
+        with self._lock:
+            cur = self.conn.cursor()
+            cur.execute(
+                """
+                SELECT
+                    hotkey,
+                    SUM(CASE WHEN score > 0 THEN 1 ELSE 0 END) AS wins,
+                    SUM(CASE WHEN score <= 0 THEN 1 ELSE 0 END) AS losses
+                FROM miner_records
+                WHERE ts >= ? AND ts < ? AND competition = ?
+                GROUP BY hotkey
+                """,
+                (int(since_ts), int(end_ts), competition),
+            )
+            rows = cur.fetchall()
+            cur.close()
+
+        wins = {str(hotkey): int(win_count or 0) for hotkey, win_count, _ in rows}
+        losses = {str(hotkey): int(loss_count or 0) for hotkey, _, loss_count in rows}
+        return wins, losses
+
     def max_scores_all_id(self) -> int:
         with self._lock:
             cur = self.conn.cursor()

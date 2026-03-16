@@ -1,3 +1,6 @@
+from pathlib import Path
+from types import SimpleNamespace
+
 from game.plugins.twentyq.protocol import TwentyQTurn
 from game.plugins.twentyq.validator_runner import TwentyQValidatorRunner
 
@@ -32,6 +35,32 @@ def test_normalize_secret_word_rules():
     assert TwentyQValidatorRunner._normalize_secret_word("roll") is None
     assert TwentyQValidatorRunner._normalize_secret_word("red apple") is None
     assert TwentyQValidatorRunner._normalize_secret_word("123") is None
+
+
+def test_normalize_dataset_word_rules():
+    assert TwentyQValidatorRunner._normalize_dataset_word("giraffe_1") == "giraffe"
+    assert (
+        TwentyQValidatorRunner._normalize_dataset_word("fire_truck_22") == "fire-truck"
+    )
+    assert TwentyQValidatorRunner._normalize_dataset_word("watch_7") is None
+
+
+def test_load_secret_word_pool_from_dataset(tmp_path, monkeypatch):
+    dataset_path = tmp_path / "sample.csv"
+    dataset_path.write_text(
+        "word,category\n" "giraffe_1,animal\n" "apple_2,food\n" "watch_3,object\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "game.plugins.twentyq.validator_runner.DATASET_PATH", Path(dataset_path)
+    )
+
+    runner = TwentyQValidatorRunner.__new__(TwentyQValidatorRunner)
+    runner.validator = SimpleNamespace()
+
+    words = runner._load_secret_word_pool()
+
+    assert words == ["giraffe", "apple"]
 
 
 def test_active_game_error_detection():

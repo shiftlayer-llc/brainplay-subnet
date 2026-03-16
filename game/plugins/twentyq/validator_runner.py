@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import csv
 from collections import deque
+from pathlib import Path
 import random
 import re
 import time
@@ -11,7 +13,6 @@ from uuid import uuid4
 
 import bittensor as bt
 import httpx
-from openai import OpenAI
 
 from game.common.epistula import generate_header
 from game.common.misc import extract_json
@@ -33,6 +34,10 @@ from game.plugins.twentyq.scoring import score_twentyq_attempt
 from game.providers.backend_client import BackendClient
 from game.providers.judge.chutes_ai import ChutesAIJudge
 from game.providers.targon_client import check_endpoints, get_metadata
+
+DATASET_PATH = (
+    Path(__file__).resolve().parent / "data" / "20q_dataset_30000_72properties.csv"
+)
 
 
 class TwentyQValidatorRunner:
@@ -215,114 +220,10 @@ class TwentyQValidatorRunner:
         return sorted(responsive_uids), metadata
 
     async def _pick_secret_word(self) -> str:
-        chosen = await self._pick_secret_word_from_chutes()
-        if chosen:
-            self._remember_secret_word(chosen)
-            return chosen
-        fallback = self._pick_secret_word_from_files()
-        self._remember_secret_word(fallback)
-        bt.logging.info(f"[20Q] Word selected by fallback list: {fallback}")
-        return fallback
-
-    async def _pick_secret_word_from_chutes(self) -> str | None:
-        if not self.judge.api_key or not self.judge.base_url:
-            return None
-
-        client = OpenAI(api_key=self.judge.api_key, base_url=self.judge.base_url)
-        rejected_words: set[str] = set(self._recent_word_set())
-        max_attempts = 8
-
-        for _ in range(max_attempts):
-            rejected_text = (
-                ", ".join(sorted(rejected_words)) if rejected_words else "none"
-            )
-            messages = [
-                {
-                    "role": "system",
-                    "content": (
-                        "Pick exactly one 20-questions secret word.\n"
-                        "Rules:\n"
-                        "1) Must be a common noun.\n"
-                        "2) Known by most people.\n"
-                        "3) Must have clear yes/no properties.\n"
-                        "4) Not too broad.\n"
-                        "5) No trick answers.\n"
-                        "6) Singular form.\n"
-                        "7) The chosen word must remain fixed.\n"
-                        "Prefer concrete, unambiguous everyday nouns (object/animal/food/tool/place).\n"
-                        "Avoid words with multiple unrelated meanings.\n"
-                        'Return JSON only: {"word":"<single_word_noun>","reason":"<short>"}'
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        "Choose the secret word now.\n"
-                        f"Do not choose any of these rejected words: {rejected_text}"
-                    ),
-                },
-            ]
-
-            def _call():
-                kwargs = {
-                    "model": self.judge.model,
-                    "messages": messages,
-                    "max_tokens": 256,
-                    "temperature": 0.8,
-                }
-                try:
-                    return client.chat.completions.create(
-                        **kwargs,
-                        reasoning_effort="low",
-                    )
-                except TypeError:
-                    return client.chat.completions.create(**kwargs)
-
-            try:
-                result = await asyncio.wait_for(
-                    asyncio.to_thread(_call),
-                    timeout=self.judge.timeout_sec,
-                )
-            except Exception as err:  # noqa: BLE001
-                bt.logging.debug(f"[20Q] Chutes word picker failed: {err}")
-                return None
-
-            text = ""
-            if result.choices:
-                message = result.choices[0].message
-                text = str(
-                    getattr(message, "content", "")
-                    or getattr(message, "reasoning_content", "")
-                    or getattr(message, "reasoning", "")
-                    or ""
-                )
-            if not text.strip():
-                continue
-
-            try:
-                payload = extract_json(text)
-            except Exception as err:  # noqa: BLE001
-                bt.logging.debug(f"[20Q] Chutes word picker invalid json: {err}")
-                continue
-
-            raw_word = str(payload.get("word") or "").strip().lower()
-            word = self._normalize_secret_word(raw_word)
-            if not word:
-                if raw_word:
-                    rejected_words.add(raw_word)
-                bt.logging.debug(f"[20Q] Chutes word picker invalid word: {raw_word!r}")
-                continue
-            if word in rejected_words:
-                bt.logging.debug(
-                    f"[20Q] Chutes word picker repeated rejected word: {word!r}"
-                )
-                rejected_words.add(word)
-                continue
-
-            bt.logging.info(f"[20Q] Word selected by chutes: {word}")
-            return word
-
-        return None
+        word = self._pick_secret_word_from_dataset()
+        self._remember_secret_word(word)
+        bt.logging.info(f"[20Q] Word selected from dataset: {word}")
+        return word
 
     @staticmethod
     def _normalize_secret_word(word: str) -> str | None:
@@ -370,8 +271,44 @@ class TwentyQValidatorRunner:
             return None
         return candidate
 
-    def _pick_secret_word_from_files(self) -> str:
-        # Safe local fallback if chutes word generation is unavailable.
+    @staticmethod
+    def _normalize_dataset_word(raw_word: str) -> str | None:
+        candidate = str(raw_word or "").strip().lower()
+        if not candidate:
+            return None
+        candidate = re.sub(r"_\d+$", "", candidate)
+        candidate = candidate.replace("_", "-")
+        return TwentyQValidatorRunner._normalize_secret_word(candidate)
+
+    def _load_secret_word_pool(self) -> list[str]:
+        cached = getattr(self.validator, "_twentyq_secret_word_pool", None)
+        if cached:
+            return list(cached)
+
+        words: list[str] = []
+        try:
+            with DATASET_PATH.open("r", encoding="utf-8", newline="") as handle:
+                reader = csv.DictReader(handle)
+                for row in reader:
+                    normalized = self._normalize_dataset_word(row.get("word") or "")
+                    if normalized:
+                        words.append(normalized)
+        except Exception as err:  # noqa: BLE001
+            bt.logging.warning(f"[20Q] Failed to load dataset {DATASET_PATH}: {err}")
+
+        deduped_words = list(dict.fromkeys(words))
+        self.validator._twentyq_secret_word_pool = deduped_words
+        return list(deduped_words)
+
+    def _pick_secret_word_from_dataset(self) -> str:
+        dataset_words = self._load_secret_word_pool()
+        if dataset_words:
+            recent = self._recent_word_set()
+            candidates = [word for word in dataset_words if word not in recent]
+            pool = candidates or dataset_words
+            return random.choice(pool)
+
+        # Safe local fallback if dataset loading fails.
         safe_words = [
             "apple",
             "bicycle",
