@@ -47,7 +47,16 @@ from game.plugins.codenames.game_types import (
 from openai import OpenAI
 import os
 
-client = OpenAI(api_key=os.environ.get("OPENAI_KEY"))
+
+def _get_codenames_judge_client() -> OpenAI:
+    return OpenAI(
+        api_key=os.getenv("CHUTES_API_KEY"),
+        base_url=os.getenv("CHUTES_BASE_URL", "https://llm.chutes.ai/v1"),
+    )
+
+
+def _get_codenames_judge_model() -> str:
+    return os.getenv("CHUTES_JUDGE_MODEL", "openai/gpt-oss-120b-TEE")
 
 
 def organize_team(self, competition, uids):
@@ -622,13 +631,22 @@ async def forward(self):
                 )
 
                 try:
-                    result = client.responses.create(
-                        model="gpt-5.1",
-                        input=messages,
-                        reasoning={"effort": "medium"},
-                        text={"verbosity": "low"},
-                    )
-                    result_json = json.loads(result.output_text)
+                    client = _get_codenames_judge_client()
+
+                    def _call_rule_judge():
+                        return client.chat.completions.create(
+                            model=_get_codenames_judge_model(),
+                            messages=messages,
+                            max_tokens=128,
+                            temperature=0.0,
+                            reasoning_effort="low",
+                        )
+
+                    result = await asyncio.to_thread(_call_rule_judge)
+                    content = ""
+                    if result.choices:
+                        content = str(result.choices[0].message.content or "")
+                    result_json = json.loads(content)
                     if result_json.get("valid") is False:
                         bt.logging.info(f"Clue check: {result_json}")
                         return False, result_json.get("reason", "Invalid clue")
