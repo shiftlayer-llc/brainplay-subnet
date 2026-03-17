@@ -757,9 +757,13 @@ class ScoreStore:
                         "room_id": room_id,
                         "competition": competition,
                         "validator": validator,
+                        "status": str(row.get("status") or "completed"),
                         "started_at": int(started_at or 0),
                         "ended_at": int(ended_at or 0),
                         "reason": str(row.get("reason") or "completed"),
+                        "question_count": int(row.get("question_count") or 0),
+                        "question_limit": int(row.get("question_limit") or 0),
+                        "bonus_limit": int(row.get("bonus_limit") or 0),
                         "participants": participants,
                         "score_map": score_map,
                     }
@@ -858,6 +862,13 @@ class ScoreStore:
             participants = row.get("participants") or []
             score_map = dict(row.get("score_map") or {})
             reason = str(row.get("reason") or "completed")
+            status = str(row.get("status") or "completed")
+            metadata = {
+                "reason": reason,
+                "question_count": int(row.get("question_count") or 0),
+                "question_limit": int(row.get("question_limit") or 0),
+                "bonus_limit": int(row.get("bonus_limit") or 0),
+            }
 
             self.generic_store.upsert_session(
                 {
@@ -865,10 +876,10 @@ class ScoreStore:
                     "game_code": competition,
                     "competition_code": competition,
                     "validator_hotkey": validator,
-                    "status": "completed",
+                    "status": status,
                     "started_at": started_at,
                     "ended_at": ended_at,
-                    "metadata_json": json.dumps({"reason": reason}, sort_keys=True),
+                    "metadata_json": json.dumps(metadata, sort_keys=True),
                 }
             )
 
