@@ -86,8 +86,47 @@ class BaseValidatorNeuron(BaseNeuron):
         self.should_exit: bool = False
         self.is_running: bool = False
         self.thread: Union[threading.Thread, None] = None
-        self.codenames_process = None  # Process for codenames competition
+        self.competition_processes: dict[str, subprocess.Popen] = {}
         self.game_plugin = None
+
+    @staticmethod
+    def _competition_codes_for_main() -> list[str]:
+        return [competition.value for competition in Competition]
+
+    @staticmethod
+    def _base_validator_argv(argv: list[str]) -> list[str]:
+        cleaned_args: list[str] = []
+        skip_next = False
+        for arg in argv:
+            if skip_next:
+                skip_next = False
+                continue
+            if arg == "--competition":
+                skip_next = True
+                continue
+            if arg.startswith("--competition="):
+                continue
+            cleaned_args.append(arg)
+        return cleaned_args
+
+    def _stop_competition_subprocesses(self) -> None:
+        bt.logging.debug("Stopping competition subprocesses.")
+        for competition_code, process in list(self.competition_processes.items()):
+            if process is None:
+                continue
+            try:
+                if process.poll() is None:
+                    process.terminate()
+                    process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                bt.logging.warning(
+                    f"Competition subprocess {competition_code} did not exit after terminate(); killing."
+                )
+                process.kill()
+                process.wait(timeout=5)
+            finally:
+                self.competition_processes.pop(competition_code, None)
+        bt.logging.debug("Stopped competition subprocesses.")
 
     def serve_axon(self):
         """Serve axon to enable external connections."""
@@ -446,23 +485,21 @@ class BaseValidatorNeuron(BaseNeuron):
                         print(f"[{prefix}] {line}", end="")
 
                 python_exe = sys.executable
-                args = sys.argv.copy()
-                args += ["--competition"]
+                args = self._base_validator_argv(sys.argv.copy())
 
-                # Initialize sub-processes for each competition
-                self.codenames_process = subprocess.Popen(
-                    [python_exe, "-u", *args, Competition.CODENAMES.value],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                )
-
-                # Start threads and stream output from each sub-process
-                threading.Thread(
-                    target=stream_output,
-                    args=("CODENAMES", self.codenames_process),
-                    daemon=True,
-                ).start()
+                for competition_code in self._competition_codes_for_main():
+                    process = subprocess.Popen(
+                        [python_exe, "-u", *args, "--competition", competition_code],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                    )
+                    self.competition_processes[competition_code] = process
+                    threading.Thread(
+                        target=stream_output,
+                        args=(competition_code.upper(), process),
+                        daemon=True,
+                    ).start()
             else:
                 self.thread = threading.Thread(target=self.run, daemon=True)
                 self.thread.start()
@@ -475,7 +512,8 @@ class BaseValidatorNeuron(BaseNeuron):
         """
         if self.is_running:
             if self.config.competition == "main":
-                pass
+                self._stop_competition_subprocesses()
+                self.is_running = False
             else:
                 bt.logging.debug("Stopping validator in background thread.")
                 self.should_exit = True
@@ -517,11 +555,7 @@ class BaseValidatorNeuron(BaseNeuron):
             bt.logging.debug("Stopping validator in background thread.")
             self.should_exit = True
             if self.config.competition == "main":
-                bt.logging.debug("Stopping competition subprocesses.")
-                if self.codenames_process:
-                    self.codenames_process.terminate()
-                    self.codenames_process.wait(timeout=5)
-                bt.logging.debug("Stopped competition subprocesses.")
+                self._stop_competition_subprocesses()
             if self.thread:
                 self.thread.join(5)
             self.is_running = False
