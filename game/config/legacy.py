@@ -23,6 +23,7 @@ import bittensor as bt
 from game.common.logging import setup_events_logger
 from game.validator.scoring_config import SCORING_INTERVAL
 
+
 def check_config(cls, config: "bt.Config"):
     r"""Checks/validates the config namespace object."""
     bt.logging.check_config(config)
@@ -226,7 +227,7 @@ def add_validator_args(cls, parser):
         "--burn_ratio",
         type=float,
         help="The ratio of burn on each weight update.",
-        default=0.95,
+        default=0.90,
     )
 
     parser.add_argument(
@@ -270,7 +271,7 @@ def add_validator_args(cls, parser):
     parser.add_argument(
         "--game.interval",
         type=str,
-        default="1 minutes",
+        default="3 minutes",
         help="Interval to run game",
     )
 

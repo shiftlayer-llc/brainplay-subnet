@@ -35,8 +35,7 @@ class GenericStore:
 
     def init(self) -> None:
         cur = self.conn.cursor()
-        cur.execute(
-            """
+        cur.execute("""
             CREATE TABLE IF NOT EXISTS sessions (
                 session_id TEXT PRIMARY KEY,
                 game_code TEXT NOT NULL,
@@ -47,10 +46,8 @@ class GenericStore:
                 ended_at INTEGER,
                 metadata_json TEXT
             )
-            """
-        )
-        cur.execute(
-            """
+            """)
+        cur.execute("""
             CREATE TABLE IF NOT EXISTS attempts (
                 attempt_id TEXT PRIMARY KEY,
                 session_id TEXT NOT NULL,
@@ -62,10 +59,8 @@ class GenericStore:
                 summary_json TEXT,
                 FOREIGN KEY(session_id) REFERENCES sessions(session_id)
             )
-            """
-        )
-        cur.execute(
-            """
+            """)
+        cur.execute("""
             CREATE TABLE IF NOT EXISTS attempt_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 attempt_id TEXT NOT NULL,
@@ -75,8 +70,7 @@ class GenericStore:
                 ts INTEGER NOT NULL,
                 FOREIGN KEY(attempt_id) REFERENCES attempts(attempt_id)
             )
-            """
-        )
+            """)
         cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_attempts_comp_hotkey ON attempts(session_id, miner_hotkey)"
         )
@@ -154,6 +148,54 @@ class GenericStore:
         total_scores = {hotkey: float(total or 0.0) for hotkey, _, total, _ in rows}
         counts = {hotkey: float(count or 0.0) for hotkey, _, _, count in rows}
         return avg_scores, total_scores, counts
+
+    def win_loss_counts_in_window(
+        self, competition_code: str, since_ts: float, end_ts: float
+    ) -> tuple[Dict[str, int], Dict[str, int]]:
+        query = """
+            SELECT
+                a.miner_hotkey,
+                SUM(CASE WHEN a.score > 0 THEN 1 ELSE 0 END),
+                SUM(CASE WHEN a.score <= 0 THEN 1 ELSE 0 END)
+            FROM attempts a
+            JOIN sessions s ON s.session_id = a.session_id
+            WHERE s.competition_code = ? AND a.ended_at >= ? AND a.ended_at < ?
+            GROUP BY a.miner_hotkey
+        """
+        rows = self.conn.execute(
+            query, (competition_code, int(since_ts), int(end_ts))
+        ).fetchall()
+        wins = {str(hotkey): int(win_count or 0) for hotkey, win_count, _ in rows}
+        losses = {str(hotkey): int(loss_count or 0) for hotkey, _, loss_count in rows}
+        return wins, losses
+
+    def games_in_window(
+        self, competition_code: str, since_ts: float, end_ts: float
+    ) -> int:
+        row = self.conn.execute(
+            """
+            SELECT COUNT(DISTINCT s.session_id)
+            FROM sessions s
+            WHERE s.competition_code = ? AND s.ended_at >= ? AND s.ended_at < ?
+            """,
+            (competition_code, int(since_ts), int(end_ts)),
+        ).fetchone()
+        return int(row[0] or 0) if row else 0
+
+    def latest_timestamp(self, competition_code: Optional[str] = None) -> int:
+        if competition_code is None:
+            row = self.conn.execute("SELECT MAX(ended_at) FROM attempts").fetchone()
+        else:
+            row = self.conn.execute(
+                """
+                SELECT MAX(a.ended_at)
+                FROM attempts a
+                JOIN sessions s ON s.session_id = a.session_id
+                WHERE s.competition_code = ?
+                """,
+                (competition_code,),
+            ).fetchone()
+        return int(row[0] or 0) if row else 0
 
     def iter_attempts(self) -> Iterable[tuple]:
         return self.conn.execute("SELECT * FROM attempts ORDER BY rowid ASC")

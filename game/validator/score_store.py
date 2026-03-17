@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sqlite3
 import time
@@ -22,11 +23,13 @@ class ScoreStore:
         backend_url: str,
         fetch_url: Optional[str] = None,
         signer=None,
+        generic_store=None,
     ):
         self.db_path = db_path
         self.backend_url = backend_url
         self.fetch_url = fetch_url
         self.signer = signer
+        self.generic_store = generic_store
         folder = os.path.dirname(db_path)
         if folder:
             os.makedirs(folder, exist_ok=True)
@@ -50,8 +53,7 @@ class ScoreStore:
 
     def init(self):
         cur = self.conn.cursor()
-        cur.execute(
-            """
+        cur.execute("""
             CREATE TABLE IF NOT EXISTS scores (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 room_id TEXT NOT NULL UNIQUE,
@@ -70,8 +72,7 @@ class ScoreStore:
                 reason TEXT,
                 synced_at INTEGER
             );
-            """
-        )
+            """)
         try:
             cur.execute("ALTER TABLE scores ADD COLUMN competition TEXT")
         except sqlite3.OperationalError:
@@ -79,20 +80,18 @@ class ScoreStore:
         cur.close()
         with self._lock:
             cur = self.conn.cursor()
-            cur.execute(
-                """
+            cur.execute("""
                 CREATE TABLE IF NOT EXISTS miner_records (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     validator TEXT NOT NULL,
                     competition TEXT NOT NULL,
                     hotkey TEXT NOT NULL,
                     room_id TEXT NOT NULL,
-                    score INTEGER NOT NULL,
+                    score REAL NOT NULL,
                     ts INTEGER NOT NULL,
                     synced_at INTEGER NOT NULL
                 );
-                """
-            )
+                """)
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_miner_records_validator ON miner_records(validator);"
             )
@@ -108,9 +107,9 @@ class ScoreStore:
             cur.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_miner_records_room_id_hotkey ON miner_records(room_id, hotkey);"
             )
+            self._ensure_miner_records_score_is_real(cur)
 
-            cur.execute(
-                """
+            cur.execute("""
                 CREATE TABLE IF NOT EXISTS scores_all (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     room_id TEXT NOT NULL,
@@ -130,12 +129,61 @@ class ScoreStore:
                     reason TEXT,
                     synced_at INTEGER
                 );
-                """
-            )
+                """)
             cur.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_scores_all_room_id ON scores_all(room_id);"
             )
             cur.close()
+
+    def _ensure_miner_records_score_is_real(self, cur: sqlite3.Cursor) -> None:
+        """Migrate `miner_records.score` to REAL when upgrading older schemas."""
+        try:
+            schema_rows = cur.execute("PRAGMA table_info(miner_records)").fetchall()
+        except Exception:
+            return
+        score_type = None
+        for row in schema_rows:
+            # row format: cid, name, type, notnull, dflt_value, pk
+            if str(row[1]).lower() == "score":
+                score_type = str(row[2]).upper()
+                break
+        if score_type is None or score_type == "REAL":
+            return
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS miner_records_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                validator TEXT NOT NULL,
+                competition TEXT NOT NULL,
+                hotkey TEXT NOT NULL,
+                room_id TEXT NOT NULL,
+                score REAL NOT NULL,
+                ts INTEGER NOT NULL,
+                synced_at INTEGER NOT NULL
+            )
+            """)
+        cur.execute("""
+            INSERT INTO miner_records_new(id, validator, competition, hotkey, room_id, score, ts, synced_at)
+            SELECT id, validator, competition, hotkey, room_id, CAST(score AS REAL), ts, synced_at
+            FROM miner_records
+            """)
+        cur.execute("DROP TABLE miner_records")
+        cur.execute("ALTER TABLE miner_records_new RENAME TO miner_records")
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_miner_records_validator ON miner_records(validator);"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_miner_records_competition ON miner_records(competition);"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_miner_records_hotkey ON miner_records(hotkey);"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_miner_records_room_id ON miner_records(room_id);"
+        )
+        cur.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_miner_records_room_id_hotkey ON miner_records(room_id, hotkey);"
+        )
 
     def record_game(
         self,
@@ -318,6 +366,34 @@ class ScoreStore:
 
         return {hotkey: int(count) for hotkey, count in rows}
 
+    def win_loss_counts_in_window(
+        self, competition: str, since_ts: float, end_ts: float
+    ) -> tuple[Dict[str, int], Dict[str, int]]:
+        """Return per-hotkey win/loss counts from miner_records in the window.
+
+        A "win" is any record with score > 0. A "loss" is score <= 0.
+        """
+        with self._lock:
+            cur = self.conn.cursor()
+            cur.execute(
+                """
+                SELECT
+                    hotkey,
+                    SUM(CASE WHEN score > 0 THEN 1 ELSE 0 END) AS wins,
+                    SUM(CASE WHEN score <= 0 THEN 1 ELSE 0 END) AS losses
+                FROM miner_records
+                WHERE ts >= ? AND ts < ? AND competition = ?
+                GROUP BY hotkey
+                """,
+                (int(since_ts), int(end_ts), competition),
+            )
+            rows = cur.fetchall()
+            cur.close()
+
+        wins = {str(hotkey): int(win_count or 0) for hotkey, win_count, _ in rows}
+        losses = {str(hotkey): int(loss_count or 0) for hotkey, _, loss_count in rows}
+        return wins, losses
+
     def max_scores_all_id(self) -> int:
         with self._lock:
             cur = self.conn.cursor()
@@ -335,6 +411,9 @@ class ScoreStore:
             row = cur.fetchone()
             if not row or row[0] is None:
                 cur.execute("SELECT MAX(ended_at) FROM scores")
+                row = cur.fetchone()
+            if not row or row[0] is None:
+                cur.execute("SELECT MAX(ts) FROM miner_records")
                 row = cur.fetchone()
             cur.close()
         if not row or row[0] is None:
@@ -359,6 +438,18 @@ class ScoreStore:
                 count = int(row[0])
             else:
                 count = 0
+                if competition is not None:
+                    cur.execute(
+                        """
+                        SELECT COUNT(DISTINCT room_id)
+                        FROM miner_records
+                        WHERE ts >= ? AND ts < ? AND competition = ?
+                        """,
+                        (int(since_ts), int(end_ts), competition),
+                    )
+                    row2 = cur.fetchone()
+                    if row2 and row2[0]:
+                        count = int(row2[0])
             cur.close()
         return int(count)
 
@@ -379,25 +470,60 @@ class ScoreStore:
         ro: str,
         bs: str,
         bo: str,
-        score_rs: int,
-        score_ro: int,
-        score_bs: int,
-        score_bo: int,
+        score_rs: float,
+        score_ro: float,
+        score_bs: float,
+        score_bo: float,
         reason: str,
     ) -> bool:
+        scores = [
+            {"hotkey": rs, "score": float(score_rs)},
+            {"hotkey": ro, "score": float(score_ro)},
+            {"hotkey": bs, "score": float(score_bs)},
+            {"hotkey": bo, "score": float(score_bo)},
+        ]
+        return await self.upload_scores(
+            room_id=room_id,
+            competition=competition,
+            scores=scores,
+            reason=reason,
+        )
+
+    async def upload_scores(
+        self,
+        room_id: str,
+        competition: str,
+        scores: Sequence[dict],
+        reason: str,
+    ) -> bool:
+        clean_scores = []
+        for row in scores:
+            hotkey = str((row or {}).get("hotkey") or "").strip()
+            if not hotkey:
+                continue
+            try:
+                score_value = float((row or {}).get("score") or 0.0)
+            except (TypeError, ValueError):
+                score_value = 0.0
+            clean_scores.append({"hotkey": hotkey, "score": score_value})
+
+        self._upsert_local_miner_scores(
+            room_id=room_id,
+            competition=competition,
+            scores=clean_scores,
+        )
 
         if not self.backend_url:
             bt.logging.warning("No backend URL configured for score syncing.")
-            return 0
+            return True
 
         async with aiohttp.ClientSession() as session:
+            participants = [
+                {"hotkey": row["hotkey"], "score": row["score"]} for row in clean_scores
+            ]
             payload = {
-                "scores": [
-                    {"hotkey": rs, "score": score_rs},
-                    {"hotkey": ro, "score": score_ro},
-                    {"hotkey": bs, "score": score_bs},
-                    {"hotkey": bo, "score": score_bo},
-                ],
+                "scores": clean_scores,
+                "participants": participants,
                 "reason": reason,
             }
             headers = self.signer() if self.signer else {}
@@ -524,9 +650,59 @@ class ScoreStore:
             if close_session:
                 await session.close()
 
+    def _upsert_local_miner_scores(
+        self,
+        *,
+        room_id: str,
+        competition: str,
+        scores: Sequence[dict],
+    ) -> None:
+        validator_hotkey = ""
+        if self.signer:
+            headers = self.signer() or {}
+            validator_hotkey = str(headers.get("X-Validator-Hotkey") or "")
+        now_ts = int(time.time())
+        rows = []
+        for row in scores:
+            hotkey = str((row or {}).get("hotkey") or "").strip()
+            if not hotkey:
+                continue
+            try:
+                score_value = float((row or {}).get("score") or 0.0)
+            except (TypeError, ValueError):
+                score_value = 0.0
+            rows.append(
+                (
+                    validator_hotkey,
+                    competition,
+                    hotkey,
+                    room_id,
+                    score_value,
+                    now_ts,
+                    now_ts,
+                )
+            )
+        if not rows:
+            return
+        with self._lock:
+            cur = self.conn.cursor()
+            cur.executemany(
+                """
+                INSERT INTO miner_records(validator, competition, hotkey, room_id, score, ts, synced_at)
+                VALUES(?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(room_id, hotkey) DO UPDATE SET
+                    score=excluded.score,
+                    ts=excluded.ts,
+                    synced_at=excluded.synced_at
+                """,
+                rows,
+            )
+            cur.close()
+
     def _upsert_scores_all(self, rows: Sequence[dict]) -> None:
         mapped_rows = []
         miner_records = []
+        generic_rows = []
         synced_at = int(time.time())
         for row in rows:
             try:
@@ -560,21 +736,61 @@ class ScoreStore:
                         int(time.time()),
                     )
                 )
+                room_id = str(row.get("room_id") or row.get("roomId") or "")
+                validator = str(row.get("validator") or "")
                 participants = row.get("participants") or []
-                scores = [score_rs, score_ro, score_bs, score_bo] + [
-                    0.0 for _ in range(len(participants) - 4)
-                ]
-                validator = row.get("validator") or ""
+                score_map = {}
+                raw_scores = row.get("scores") or []
+                if isinstance(raw_scores, list):
+                    for score_row in raw_scores:
+                        if not isinstance(score_row, dict):
+                            continue
+                        hotkey = str(score_row.get("hotkey") or "").strip()
+                        if not hotkey:
+                            continue
+                        try:
+                            score_map[hotkey] = float(score_row.get("score") or 0.0)
+                        except (TypeError, ValueError):
+                            score_map[hotkey] = 0.0
+                generic_rows.append(
+                    {
+                        "room_id": room_id,
+                        "competition": competition,
+                        "validator": validator,
+                        "status": str(row.get("status") or "completed"),
+                        "started_at": int(started_at or 0),
+                        "ended_at": int(ended_at or 0),
+                        "reason": str(row.get("reason") or "completed"),
+                        "question_count": int(row.get("question_count") or 0),
+                        "question_limit": int(row.get("question_limit") or 0),
+                        "bonus_limit": int(row.get("bonus_limit") or 0),
+                        "participants": participants,
+                        "score_map": score_map,
+                    }
+                )
+                default_scores = [score_rs, score_ro, score_bs, score_bo]
                 for idx, participant in enumerate(participants):
-                    if participant == validator:
+                    participant_hotkey = ""
+                    if isinstance(participant, str):
+                        participant_hotkey = participant
+                    elif isinstance(participant, dict):
+                        participant_hotkey = str(participant.get("hotkey") or "")
+                    participant_hotkey = participant_hotkey.strip()
+                    if not participant_hotkey or participant_hotkey == validator:
                         continue
+                    if participant_hotkey in score_map:
+                        participant_score = score_map[participant_hotkey]
+                    elif idx < len(default_scores):
+                        participant_score = default_scores[idx]
+                    else:
+                        participant_score = 0.0
                     miner_records.append(
                         (
                             validator,
                             competition,
-                            str(participant),  # hotkey
+                            participant_hotkey,
                             str(row.get("room_id") or row.get("roomId") or ""),
-                            scores[idx],
+                            float(participant_score),
                             int(ended_at or 0),
                             int(
                                 row.get("synced_at") or row.get("syncedAt") or synced_at
@@ -628,6 +844,83 @@ class ScoreStore:
                 miner_records,
             )
             cur.close()
+        self._upsert_generic_scores_all(generic_rows)
+
+    def _upsert_generic_scores_all(self, rows: Sequence[dict]) -> None:
+        if not self.generic_store:
+            return
+
+        for row in rows:
+            competition = str(row.get("competition") or "")
+            if not competition or competition == "codenames":
+                continue
+
+            room_id = str(row.get("room_id") or "")
+            validator = str(row.get("validator") or "")
+            started_at = int(row.get("started_at") or 0)
+            ended_at = int(row.get("ended_at") or 0)
+            participants = row.get("participants") or []
+            score_map = dict(row.get("score_map") or {})
+            reason = str(row.get("reason") or "completed")
+            status = str(row.get("status") or "completed")
+            metadata = {
+                "reason": reason,
+                "question_count": int(row.get("question_count") or 0),
+                "question_limit": int(row.get("question_limit") or 0),
+                "bonus_limit": int(row.get("bonus_limit") or 0),
+            }
+
+            self.generic_store.upsert_session(
+                {
+                    "session_id": room_id,
+                    "game_code": competition,
+                    "competition_code": competition,
+                    "validator_hotkey": validator,
+                    "status": status,
+                    "started_at": started_at,
+                    "ended_at": ended_at,
+                    "metadata_json": json.dumps(metadata, sort_keys=True),
+                }
+            )
+
+            for participant in participants:
+                participant_hotkey = ""
+                participant_score = 0.0
+                participant_status = "completed"
+                summary_json = None
+                if isinstance(participant, str):
+                    participant_hotkey = participant.strip()
+                elif isinstance(participant, dict):
+                    participant_hotkey = str(participant.get("hotkey") or "").strip()
+                    try:
+                        participant_score = float(participant.get("score") or 0.0)
+                    except (TypeError, ValueError):
+                        participant_score = 0.0
+                    participant_status = (
+                        str(
+                            participant.get("finish_reason")
+                            or participant.get("status")
+                            or "completed"
+                        )
+                        or "completed"
+                    )
+                    summary_json = json.dumps(participant, sort_keys=True)
+                if not participant_hotkey or participant_hotkey == validator:
+                    continue
+                if participant_hotkey in score_map:
+                    participant_score = float(score_map[participant_hotkey])
+                self.generic_store.upsert_attempt(
+                    {
+                        "attempt_id": f"{room_id}:{participant_hotkey}",
+                        "session_id": room_id,
+                        "miner_hotkey": participant_hotkey,
+                        "status": participant_status,
+                        "score": participant_score,
+                        "started_at": started_at,
+                        "ended_at": ended_at,
+                        "summary_json": summary_json,
+                    }
+                )
 
     def close(self):
         with self._lock:

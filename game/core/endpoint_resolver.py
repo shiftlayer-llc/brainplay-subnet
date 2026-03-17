@@ -92,12 +92,30 @@ def read_endpoints_for_competition(
 ) -> Dict[int, str]:
     """Read and resolve miner endpoints from chain commitments for a competition."""
     resolved: Dict[int, str] = {}
+    raw_map: Dict[str, Any] = {}
+    bulk_ok = False
+    try:
+        maybe_map = validator.subtensor.get_all_commitments(validator.config.netuid)
+        if isinstance(maybe_map, dict):
+            raw_map = maybe_map
+        bulk_ok = True
+    except Exception:
+        bulk_ok = False
+
     for uid in uids:
-        try:
-            raw = validator.subtensor.get_commitment(validator.config.netuid, uid)
-        except Exception:
-            continue
-        payload = parse_commitment_payload(raw)
+        payload: Dict[str, Any] = {}
+        if bulk_ok:
+            try:
+                hotkey = validator.metagraph.hotkeys[int(uid)]
+            except Exception:
+                continue
+            payload = parse_commitment_payload(raw_map.get(str(hotkey)))
+        else:
+            try:
+                raw = validator.subtensor.get_commitment(validator.config.netuid, uid)
+            except Exception:
+                continue
+            payload = parse_commitment_payload(raw)
         endpoint = resolve_game_endpoint_from_commitment(payload, competition_code)
         if endpoint:
             resolved[int(uid)] = endpoint

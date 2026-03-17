@@ -1,7 +1,7 @@
 """Canonical game/competition codes and mechid metadata.
 
 Phase 1 scope:
-- Only codenames is runtime-supported.
+- Codenames and 20Q are runtime-supported.
 - Future games can be added here once their mechids are finalized.
 """
 
@@ -28,12 +28,17 @@ _SUPPORTED_GAMES: Dict[str, GameCodeInfo] = {
         mechid=0,
         display_name="Codenames",
     ),
+    "twentyq": GameCodeInfo(
+        game_code="twentyq",
+        competition_code="twentyq",
+        mechid=1,
+        display_name="20 Questions",
+    ),
 }
 
 
 # Reserved/planned codes (no mechid guarantees yet).
 _RESERVED_GAME_CODES: Tuple[str, ...] = (
-    "20q",
     "mario",
     "2048",
     "pacman",
