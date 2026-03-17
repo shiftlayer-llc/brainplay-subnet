@@ -565,13 +565,21 @@ class TwentyQValidatorRunner:
             {
                 "role": "system",
                 "content": (
-                    "You are playing 20 Questions. "
-                    'Respond with JSON only: {"question": string|null, "guess": string|null, "reasoning": string|null}. '
-                    "Provide at least one of question or guess. "
-                    "Do not repeat guesses that were already marked incorrect. "
-                    "The target word format is strict: alphabetic characters only "
-                    "(a-z), no numbers, no punctuation, no spaces. Any direct "
-                    "guess must obey that exact format."
+                    "You are playing 20 Questions.\n"
+                    'Return exactly one JSON object: {"question": string|null, '
+                    '"guess": string|null, "reasoning": string|null}.\n'
+                    "Choose one action per turn:\n"
+                    "- Ask one strong yes/no question, or\n"
+                    "- Make one direct guess if confidence is high.\n"
+                    "Rules:\n"
+                    "- Do not repeat an incorrect guess.\n"
+                    "- Do not repeat a question already answered by history.\n"
+                    "- Prefer broad-to-narrow elimination.\n"
+                    "- If guessing, set question to null.\n"
+                    "- If asking, set guess to null.\n"
+                    "- Keep reasoning brief.\n"
+                    "- Any guess must be lowercase letters only a-z, with no "
+                    "numbers, punctuation, or spaces."
                 ),
             },
             {
@@ -580,12 +588,14 @@ class TwentyQValidatorRunner:
                     f"Turn: {payload.turn_index}/{self.max_total_turns}\n"
                     f"History:\n{history_text}\n"
                     f"Last answer: {payload.last_answer or 'none'}\n"
-                    "Target-word constraints: letters only a-z, no numbers, no "
-                    "punctuation, no spaces.\n"
-                    "Use prior Q/A and prior guesses. "
-                    "Treat incorrect prior guesses as eliminated. "
+                    "Target word format: lowercase letters only a-z, no numbers, "
+                    "no punctuation, no spaces.\n"
+                    "Use the history to eliminate candidates. Treat prior "
+                    "incorrect guesses as impossible. Only guess when the history "
+                    "supports a strong single candidate; otherwise ask the highest-"
+                    "value yes/no question."
                     f"{retry_suffix}"
-                    "Ask your next best yes/no question or make a direct guess."
+                    "Respond with the JSON object only."
                 ),
             },
         ]
@@ -607,12 +617,14 @@ class TwentyQValidatorRunner:
                 return client.chat.completions.create(
                     model="brainplay",
                     messages=messages,
+                    temperature=0.5,
                     reasoning_effort=participant.reasoning_effort,
                 )
             except TypeError:
                 return client.chat.completions.create(
                     model="brainplay",
                     messages=messages,
+                    temperature=0.5,
                 )
 
         try:
