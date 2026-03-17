@@ -645,7 +645,7 @@ class BaseValidatorNeuron(BaseNeuron):
             if use_generic_scores
             else self.score_store.games_in_window(since_ts, end_ts, comp_value)
         )
-        if comp_games < 100:
+        if comp_games < 30:
             self._log_competition_scores(
                 comp_value=comp_value,
                 counts=counts,
@@ -656,7 +656,7 @@ class BaseValidatorNeuron(BaseNeuron):
                 observer_counts=observer_counts,
             )
             bt.logging.warning(
-                f"Not enough games for competition {comp_value}; skipping its allocation. ({comp_games} < 300)"
+                f"Not enough games for competition {comp_value}; skipping its allocation. ({comp_games} < 30)"
             )
             self._burn_weights(competition.mechid)
             return
