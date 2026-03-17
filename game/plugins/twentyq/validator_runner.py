@@ -13,6 +13,7 @@ from uuid import uuid4
 
 import bittensor as bt
 import httpx
+from openai import OpenAI
 
 from game.common.epistula import generate_header
 from game.common.misc import extract_json
@@ -567,7 +568,10 @@ class TwentyQValidatorRunner:
                     "You are playing 20 Questions. "
                     'Respond with JSON only: {"question": string|null, "guess": string|null, "reasoning": string|null}. '
                     "Provide at least one of question or guess. "
-                    "Do not repeat guesses that were already marked incorrect."
+                    "Do not repeat guesses that were already marked incorrect. "
+                    "The target word format is strict: alphabetic characters only "
+                    "(a-z), no numbers, no punctuation, no spaces, length 4-12 "
+                    "characters. Any direct guess must obey that exact format."
                 ),
             },
             {
@@ -576,6 +580,8 @@ class TwentyQValidatorRunner:
                     f"Turn: {payload.turn_index}/{self.max_total_turns}\n"
                     f"History:\n{history_text}\n"
                     f"Last answer: {payload.last_answer or 'none'}\n"
+                    "Target-word constraints: letters only a-z, no numbers, no "
+                    "punctuation, no spaces, 4-12 characters.\n"
                     "Use prior Q/A and prior guesses. "
                     "Treat incorrect prior guesses as eliminated. "
                     f"{retry_suffix}"

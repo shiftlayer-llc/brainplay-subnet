@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sqlite3
 import time
@@ -22,11 +23,13 @@ class ScoreStore:
         backend_url: str,
         fetch_url: Optional[str] = None,
         signer=None,
+        generic_store=None,
     ):
         self.db_path = db_path
         self.backend_url = backend_url
         self.fetch_url = fetch_url
         self.signer = signer
+        self.generic_store = generic_store
         folder = os.path.dirname(db_path)
         if folder:
             os.makedirs(folder, exist_ok=True)
@@ -699,6 +702,7 @@ class ScoreStore:
     def _upsert_scores_all(self, rows: Sequence[dict]) -> None:
         mapped_rows = []
         miner_records = []
+        generic_rows = []
         synced_at = int(time.time())
         for row in rows:
             try:
@@ -732,6 +736,8 @@ class ScoreStore:
                         int(time.time()),
                     )
                 )
+                room_id = str(row.get("room_id") or row.get("roomId") or "")
+                validator = str(row.get("validator") or "")
                 participants = row.get("participants") or []
                 score_map = {}
                 raw_scores = row.get("scores") or []
@@ -746,9 +752,19 @@ class ScoreStore:
                             score_map[hotkey] = float(score_row.get("score") or 0.0)
                         except (TypeError, ValueError):
                             score_map[hotkey] = 0.0
-
+                generic_rows.append(
+                    {
+                        "room_id": room_id,
+                        "competition": competition,
+                        "validator": validator,
+                        "started_at": int(started_at or 0),
+                        "ended_at": int(ended_at or 0),
+                        "reason": str(row.get("reason") or "completed"),
+                        "participants": participants,
+                        "score_map": score_map,
+                    }
+                )
                 default_scores = [score_rs, score_ro, score_bs, score_bo]
-                validator = row.get("validator") or ""
                 for idx, participant in enumerate(participants):
                     participant_hotkey = ""
                     if isinstance(participant, str):
@@ -824,6 +840,76 @@ class ScoreStore:
                 miner_records,
             )
             cur.close()
+        self._upsert_generic_scores_all(generic_rows)
+
+    def _upsert_generic_scores_all(self, rows: Sequence[dict]) -> None:
+        if not self.generic_store:
+            return
+
+        for row in rows:
+            competition = str(row.get("competition") or "")
+            if not competition or competition == "codenames":
+                continue
+
+            room_id = str(row.get("room_id") or "")
+            validator = str(row.get("validator") or "")
+            started_at = int(row.get("started_at") or 0)
+            ended_at = int(row.get("ended_at") or 0)
+            participants = row.get("participants") or []
+            score_map = dict(row.get("score_map") or {})
+            reason = str(row.get("reason") or "completed")
+
+            self.generic_store.upsert_session(
+                {
+                    "session_id": room_id,
+                    "game_code": competition,
+                    "competition_code": competition,
+                    "validator_hotkey": validator,
+                    "status": "completed",
+                    "started_at": started_at,
+                    "ended_at": ended_at,
+                    "metadata_json": json.dumps({"reason": reason}, sort_keys=True),
+                }
+            )
+
+            for participant in participants:
+                participant_hotkey = ""
+                participant_score = 0.0
+                participant_status = "completed"
+                summary_json = None
+                if isinstance(participant, str):
+                    participant_hotkey = participant.strip()
+                elif isinstance(participant, dict):
+                    participant_hotkey = str(participant.get("hotkey") or "").strip()
+                    try:
+                        participant_score = float(participant.get("score") or 0.0)
+                    except (TypeError, ValueError):
+                        participant_score = 0.0
+                    participant_status = (
+                        str(
+                            participant.get("finish_reason")
+                            or participant.get("status")
+                            or "completed"
+                        )
+                        or "completed"
+                    )
+                    summary_json = json.dumps(participant, sort_keys=True)
+                if not participant_hotkey or participant_hotkey == validator:
+                    continue
+                if participant_hotkey in score_map:
+                    participant_score = float(score_map[participant_hotkey])
+                self.generic_store.upsert_attempt(
+                    {
+                        "attempt_id": f"{room_id}:{participant_hotkey}",
+                        "session_id": room_id,
+                        "miner_hotkey": participant_hotkey,
+                        "status": participant_status,
+                        "score": participant_score,
+                        "started_at": started_at,
+                        "ended_at": ended_at,
+                        "summary_json": summary_json,
+                    }
+                )
 
     def close(self):
         with self._lock:

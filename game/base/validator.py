@@ -18,6 +18,7 @@
 
 
 import copy
+import json
 import os
 import sys
 import time
@@ -43,6 +44,7 @@ from game.config import add_validator_args
 from game.config.defaults import DEFAULT_SCORING_INTERVAL
 from game.storage.aggregation import parse_interval_to_seconds
 from game.storage.legacy_codenames_store import ScoreStore
+from game.storage.store import GenericStore
 from game.plugins.codenames.game_types import Competition, Game
 from dotenv import load_dotenv
 
@@ -173,7 +175,41 @@ class BaseValidatorNeuron(BaseNeuron):
             return await legacy_forward(self)
 
         runner = plugin.create_validator_runner(self)
-        return await runner.run_round()
+        result = await runner.run_round()
+        if getattr(plugin, "game_code", None) != "codenames":
+            self._persist_generic_session_result(result)
+        return result
+
+    def _persist_generic_session_result(self, result) -> None:
+        if not getattr(self, "generic_store", None):
+            return
+
+        self.generic_store.upsert_session(
+            {
+                "session_id": result.session_id,
+                "game_code": result.game_code,
+                "competition_code": result.competition_code,
+                "validator_hotkey": self.wallet.hotkey.ss58_address,
+                "status": result.status,
+                "started_at": result.started_at,
+                "ended_at": result.ended_at,
+                "metadata_json": json.dumps(result.metadata or {}, sort_keys=True),
+            }
+        )
+        for attempt in result.attempts:
+            self.generic_store.upsert_attempt(
+                {
+                    "attempt_id": attempt.attempt_id
+                    or f"{result.session_id}:{attempt.miner_hotkey}",
+                    "session_id": result.session_id,
+                    "miner_hotkey": attempt.miner_hotkey,
+                    "status": attempt.status,
+                    "score": attempt.score,
+                    "started_at": attempt.started_at,
+                    "ended_at": attempt.ended_at,
+                    "summary_json": json.dumps(attempt.metadata or {}, sort_keys=True),
+                }
+            )
 
     def init_db(self):
         scores_db_path = os.path.join("/tmp", f"{self.competition.value}.db")
@@ -229,6 +265,9 @@ class BaseValidatorNeuron(BaseNeuron):
             signer=self.build_signed_headers,
         )
         self.score_store.init()
+        self.generic_store = GenericStore(scores_db_path)
+        self.generic_store.init()
+        self.score_store.generic_store = self.generic_store
         scoring_interval_text = DEFAULT_SCORING_INTERVAL
         if hasattr(self.config, "scoring") and getattr(
             self.config.scoring, "interval", None
@@ -368,7 +407,7 @@ class BaseValidatorNeuron(BaseNeuron):
                     bt.logging.info(
                         f"Sleeping for {game_interval - (time.time() - started_at)} seconds."
                     )
-                    time.sleep(game_interval - (time.time() - started_at))
+                    time.sleep(max(game_interval - (time.time() - started_at), 10))
 
                 # Check if we should exit.
                 if self.should_exit:
@@ -503,7 +542,17 @@ class BaseValidatorNeuron(BaseNeuron):
 
         bt.logging.info(f"Setting weights using scores from {since_ts} to {end_ts}")
 
-        latest_ts = self.score_store.latest_scores_all_timestamp()
+        competition = self.competition
+        comp_value = competition.value
+        use_generic_scores = (
+            comp_value != "codenames"
+            and getattr(self, "generic_store", None) is not None
+        )
+        latest_ts = (
+            self.generic_store.latest_timestamp(comp_value)
+            if use_generic_scores
+            else self.score_store.latest_scores_all_timestamp()
+        )
 
         age_seconds = now - latest_ts
         if age_seconds > 3600:
@@ -513,21 +562,30 @@ class BaseValidatorNeuron(BaseNeuron):
             self._burn_weights()
             return
 
-        competition = self.competition
         weights = np.zeros(self.metagraph.n, dtype=np.float32)
-        comp_value = competition.value
 
-        avg_scores, total_scores, counts = (
-            self.score_store.window_average_scores_by_hotkey(
+        if use_generic_scores:
+            avg_scores, total_scores, counts = (
+                self.generic_store.window_average_scores_by_hotkey(
+                    comp_value, since_ts, end_ts
+                )
+            )
+            win_counts, loss_counts = self.generic_store.win_loss_counts_in_window(
                 comp_value, since_ts, end_ts
             )
-        )
-        win_counts, loss_counts = self.score_store.win_loss_counts_in_window(
-            comp_value, since_ts, end_ts
-        )
-        observer_counts = self.score_store.observer_records_in_window(
-            comp_value, since_ts, end_ts
-        )
+            observer_counts = {}
+        else:
+            avg_scores, total_scores, counts = (
+                self.score_store.window_average_scores_by_hotkey(
+                    comp_value, since_ts, end_ts
+                )
+            )
+            win_counts, loss_counts = self.score_store.win_loss_counts_in_window(
+                comp_value, since_ts, end_ts
+            )
+            observer_counts = self.score_store.observer_records_in_window(
+                comp_value, since_ts, end_ts
+            )
         hotkeys_with_minimum_stake = [
             self.metagraph.hotkeys[uid]
             for uid in range(self.metagraph.n)
@@ -563,17 +621,18 @@ class BaseValidatorNeuron(BaseNeuron):
             for hotkey, score in total_scores.items()
             if hotkey in hotkeys_with_minimum_stake
         }
-        # Set record count limit for setting weights to avoid actors with few high scores (e.g new registrations)
-        median_count = np.median(
-            [
-                counts.get(self.metagraph.hotkeys[uid], 0)
-                for uid in range(self.metagraph.n)
-                if self.metagraph.S[uid] >= self.config.neuron.minimum_stake_requirement
-            ]
-        )
+        # Set record count limit for setting weights to avoid actors with few high
+        # scores (e.g. new registrations). Empty score windows should not crash.
+        eligible_counts = [
+            counts.get(self.metagraph.hotkeys[uid], 0)
+            for uid in range(self.metagraph.n)
+            if self.metagraph.S[uid] >= self.config.neuron.minimum_stake_requirement
+        ]
+        median_count = float(np.median(eligible_counts)) if eligible_counts else 0.0
         record_count_limit = int(median_count * 0.9)
+        max_count = max(counts.values(), default=0)
         bt.logging.info(
-            f"Competition {comp_value} record count limit for weight setting: {record_count_limit} (Max: {max(counts.values())}, Median: {median_count})"
+            f"Competition {comp_value} record count limit for weight setting: {record_count_limit} (Max: {max_count}, Median: {median_count})"
         )
 
         avg_scores_by_uid = {
@@ -581,7 +640,11 @@ class BaseValidatorNeuron(BaseNeuron):
             for uid, hotkey in enumerate(self.metagraph.hotkeys)
         }
 
-        comp_games = self.score_store.games_in_window(since_ts, end_ts, comp_value)
+        comp_games = (
+            self.generic_store.games_in_window(comp_value, since_ts, end_ts)
+            if use_generic_scores
+            else self.score_store.games_in_window(since_ts, end_ts, comp_value)
+        )
         if comp_games < 100:
             self._log_competition_scores(
                 comp_value=comp_value,
