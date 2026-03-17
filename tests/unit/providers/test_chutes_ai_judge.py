@@ -25,3 +25,24 @@ def test_chutes_ai_fallback_heuristic_answer():
     assert answer == "yes"
     answer = asyncio.run(judge.answer(secret="apple", question="Is it banana?"))
     assert answer in {"no", "unknown"}
+
+
+def test_chutes_ai_uses_dataset_properties_in_fallback():
+    judge = ChutesAIJudge(api_key="", base_url="")
+    answer = asyncio.run(
+        judge.answer(
+            secret="giraffe",
+            question="Is it an animal?",
+            properties={"animal": "True", "has_wheels": "False"},
+        )
+    )
+    assert answer == "yes"
+
+    answer = asyncio.run(
+        judge.answer(
+            secret="giraffe",
+            question="Does it have wheels?",
+            properties={"animal": "True", "has_wheels": "False"},
+        )
+    )
+    assert answer == "no"

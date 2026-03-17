@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Protocol
+from typing import Mapping, Protocol
 
 VALID_BOOLEANISH_ANSWERS = ("yes", "no", "unknown")
 
@@ -62,4 +62,10 @@ def normalize_yes_no_unknown(text: str) -> str:
 
 
 class YesNoUnknownJudge(Protocol):
-    async def answer(self, *, secret: str, question: str) -> str: ...
+    async def answer(
+        self,
+        *,
+        secret: str,
+        question: str,
+        properties: Mapping[str, object] | None = None,
+    ) -> str: ...

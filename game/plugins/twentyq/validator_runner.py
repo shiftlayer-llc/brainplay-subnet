@@ -301,6 +301,35 @@ class TwentyQValidatorRunner:
         self.validator._twentyq_secret_word_pool = deduped_words
         return list(deduped_words)
 
+    def _load_secret_property_map(self) -> dict[str, dict[str, str]]:
+        cached = getattr(self.validator, "_twentyq_secret_property_map", None)
+        if cached:
+            return dict(cached)
+
+        property_map: dict[str, dict[str, str]] = {}
+        try:
+            with DATASET_PATH.open("r", encoding="utf-8", newline="") as handle:
+                reader = csv.DictReader(handle)
+                for row in reader:
+                    normalized = self._normalize_dataset_word(row.get("word") or "")
+                    if not normalized or normalized in property_map:
+                        continue
+                    property_map[normalized] = {
+                        str(key): str(value)
+                        for key, value in row.items()
+                        if key != "word" and value not in (None, "")
+                    }
+        except Exception as err:  # noqa: BLE001
+            bt.logging.warning(
+                f"[20Q] Failed to load dataset properties from {DATASET_PATH}: {err}"
+            )
+
+        self.validator._twentyq_secret_property_map = property_map
+        return dict(property_map)
+
+    def _get_secret_properties(self, word: str) -> dict[str, str]:
+        return dict(self._load_secret_property_map().get(word, {}))
+
     def _pick_secret_word_from_dataset(self) -> str:
         dataset_words = self._load_secret_word_pool()
         if dataset_words:
@@ -479,7 +508,11 @@ class TwentyQValidatorRunner:
             question = (response.question or "").strip()
             answer = "unknown"
             if question:
-                answer = await self.judge.answer(secret=room.word, question=question)
+                answer = await self.judge.answer(
+                    secret=room.word,
+                    question=question,
+                    properties=self._get_secret_properties(room.word),
+                )
                 participant.question_count += 1
                 last_answer = answer
                 bt.logging.info(

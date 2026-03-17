@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
-from typing import Optional
+from typing import Mapping, Optional
 
 import bittensor as bt
 from openai import NotFoundError, OpenAI
@@ -34,25 +35,37 @@ class ChutesAIJudge:
         ).rstrip("/")
         self.timeout_sec = int(timeout_sec)
 
-    async def answer(self, *, secret: str, question: str) -> str:
+    async def answer(
+        self,
+        *,
+        secret: str,
+        question: str,
+        properties: Mapping[str, object] | None = None,
+    ) -> str:
         if not question or not question.strip():
             bt.logging.info("[20Q] Judge source=none raw='' normalized=unknown")
             return "unknown"
 
         if not self.api_key or not self.base_url:
-            heuristic = self._heuristic_answer(secret=secret, question=question)
+            heuristic = self._heuristic_answer(
+                secret=secret, question=question, properties=properties
+            )
             bt.logging.info(
                 f"[20Q] Judge source=heuristic raw='' normalized={heuristic}"
             )
             return heuristic
 
         client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+        normalized_properties = self._normalize_properties(properties)
+        properties_json = json.dumps(normalized_properties, sort_keys=True)
         messages = [
             {
                 "role": "system",
                 "content": (
                     "You are a strict 20 Questions referee.\n"
                     "You KNOW the secret word and must judge the question.\n"
+                    "Use the provided dataset properties as grounding facts when "
+                    "they are relevant to the question.\n"
                     "Return only valid JSON (no markdown, no extra text) with this exact schema:\n"
                     '{"answer":"yes|no|unknown", "reasoning":"<short reason>"}\n'
                     "The 'answer' field must be exactly one of yes, no, unknown.\n"
@@ -64,6 +77,7 @@ class ChutesAIJudge:
                 "role": "user",
                 "content": (
                     f"Secret word: {secret}\n"
+                    f"Dataset properties: {properties_json}\n"
                     f"Question: {question}\n"
                     "Respond as JSON only."
                 ),
@@ -83,6 +97,7 @@ class ChutesAIJudge:
                 "role": "user",
                 "content": (
                     f"Secret word: {secret}\n"
+                    f"Dataset properties: {properties_json}\n"
                     f"Question: {question}\n"
                     "Return JSON only."
                 ),
@@ -192,7 +207,9 @@ class ChutesAIJudge:
                 if retry_source.strip():
                     return retry_normalized
 
-                heuristic = self._heuristic_answer(secret=secret, question=question)
+                heuristic = self._heuristic_answer(
+                    secret=secret, question=question, properties=properties
+                )
                 bt.logging.info(
                     "[20Q] Judge source=heuristic_fallback "
                     f"raw={normalized_source!r} normalized={heuristic}"
@@ -201,7 +218,9 @@ class ChutesAIJudge:
 
             return normalized
         except Exception as err:
-            heuristic = self._heuristic_answer(secret=secret, question=question)
+            heuristic = self._heuristic_answer(
+                secret=secret, question=question, properties=properties
+            )
             bt.logging.warning(
                 f"[20Q] Judge source=heuristic_fallback exception={err} normalized={heuristic}"
             )
@@ -211,11 +230,105 @@ class ChutesAIJudge:
     def normalize_answer(text: str) -> str:
         return normalize_yes_no_unknown(text)
 
-    def _heuristic_answer(self, *, secret: str, question: str) -> str:
+    @staticmethod
+    def _normalize_properties(
+        properties: Mapping[str, object] | None,
+    ) -> dict[str, object]:
+        normalized: dict[str, object] = {}
+        for key, value in dict(properties or {}).items():
+            key_str = str(key).strip()
+            if not key_str:
+                continue
+            if isinstance(value, str):
+                lowered = value.strip().lower()
+                if lowered == "true":
+                    normalized[key_str] = True
+                elif lowered == "false":
+                    normalized[key_str] = False
+                else:
+                    normalized[key_str] = value.strip()
+            else:
+                normalized[key_str] = value
+        return normalized
+
+    def _heuristic_answer(
+        self,
+        *,
+        secret: str,
+        question: str,
+        properties: Mapping[str, object] | None = None,
+    ) -> str:
         q = (question or "").strip().lower()
         secret_norm = (secret or "").strip().lower()
         if not q or not secret_norm:
             return "unknown"
         if secret_norm in q:
             return "yes"
+        props = self._normalize_properties(properties)
+        boolean_question_map = {
+            "living": ["living", "alive"],
+            "animal": ["animal"],
+            "plant": ["plant"],
+            "food": ["food", "eat", "edible"],
+            "vehicle": ["vehicle"],
+            "tool": ["tool"],
+            "building": ["building"],
+            "place": ["place"],
+            "profession": ["profession", "job", "occupation"],
+            "instrument": ["instrument"],
+            "manmade": ["man-made", "manmade", "human-made", "artificial"],
+            "natural": ["natural"],
+            "portable": ["portable", "carry", "hold"],
+            "electronic": ["electronic"],
+            "mechanical": ["mechanical"],
+            "digital": ["digital"],
+            "dangerous": ["dangerous"],
+            "liquid": ["liquid"],
+            "solid": ["solid"],
+            "indoor_use": ["indoors", "indoor"],
+            "outdoor_use": ["outdoors", "outdoor"],
+            "has_wheels": ["wheels", "wheel"],
+            "has_legs": ["legs", "leg"],
+            "has_wings": ["wings", "wing"],
+            "has_engine": ["engine", "motor"],
+            "has_screen": ["screen", "display"],
+            "made_of_metal": ["metal"],
+            "made_of_wood": ["wood"],
+            "made_of_plastic": ["plastic"],
+            "made_of_stone": ["stone", "rock"],
+            "made_of_fabric": ["fabric", "cloth"],
+            "used_for_transport": ["transport", "transportation"],
+            "used_for_music": ["music", "musical"],
+            "used_for_work": ["work"],
+            "used_for_fun": ["fun", "play", "game"],
+            "found_in_home": ["home", "household"],
+            "found_in_city": ["city", "urban"],
+            "found_in_nature": ["nature", "wild"],
+            "mechanical_device": ["mechanical device"],
+            "digital_device": ["digital device"],
+            "consumable": ["consumable"],
+            "fragile": ["fragile", "breakable"],
+            "heavy": ["heavy"],
+            "lightweight": ["lightweight", "light weight"],
+            "round_shape": ["round"],
+            "rectangular_shape": ["rectangular", "rectangle"],
+            "long_shape": ["long"],
+            "flat_shape": ["flat"],
+            "can_move": ["move", "mobile"],
+            "requires_energy": ["electricity", "energy", "power"],
+            "handheld": ["handheld", "hold in your hand"],
+            "wearable": ["wearable", "wear"],
+            "used_outdoors": ["used outdoors"],
+            "used_indoors": ["used indoors"],
+            "storage_object": ["storage"],
+            "container": ["container"],
+            "decorative": ["decorative", "decoration"],
+            "communication_device": ["communication", "communicate"],
+        }
+        for prop_name, phrases in boolean_question_map.items():
+            prop_value = props.get(prop_name)
+            if not isinstance(prop_value, bool):
+                continue
+            if any(phrase in q for phrase in phrases):
+                return "yes" if prop_value else "no"
         return "unknown"
