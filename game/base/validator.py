@@ -281,8 +281,6 @@ class BaseValidatorNeuron(BaseNeuron):
         try:
             if getattr(self.config.subtensor, "network", None) == "test":
                 self.backend_base = "https://dev-backend.shiftlayer.ai"
-            if getattr(self.config, "competition", None) == "twentyq":
-                self.backend_base = "https://dev-backend.shiftlayer.ai"
         except AttributeError:
             pass
         bt.logging.info(f"Using backend: {self.backend_base}")
