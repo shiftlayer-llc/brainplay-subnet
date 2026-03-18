@@ -576,14 +576,19 @@ class BaseValidatorNeuron(BaseNeuron):
 
         competition = self.competition
         comp_value = competition.value
+        validator_hotkey = self.wallet.hotkey.ss58_address
         use_generic_scores = (
             comp_value != "codenames"
             and getattr(self, "generic_store", None) is not None
         )
         latest_ts = (
-            self.generic_store.latest_timestamp(comp_value)
+            self.generic_store.latest_timestamp(
+                comp_value, validator_hotkey=validator_hotkey
+            )
             if use_generic_scores
-            else self.score_store.latest_scores_all_timestamp()
+            else self.score_store.latest_scores_all_timestamp(
+                validator_hotkey=validator_hotkey
+            )
         )
 
         age_seconds = now - latest_ts
@@ -599,24 +604,27 @@ class BaseValidatorNeuron(BaseNeuron):
         if use_generic_scores:
             avg_scores, total_scores, counts = (
                 self.generic_store.window_average_scores_by_hotkey(
-                    comp_value, since_ts, end_ts
+                    comp_value, since_ts, end_ts, validator_hotkey=validator_hotkey
                 )
             )
             win_counts, loss_counts = self.generic_store.win_loss_counts_in_window(
-                comp_value, since_ts, end_ts
+                comp_value, since_ts, end_ts, validator_hotkey=validator_hotkey
             )
             observer_counts = {}
         else:
             avg_scores, total_scores, counts = (
                 self.score_store.window_average_scores_by_hotkey(
-                    comp_value, since_ts, end_ts
+                    comp_value, since_ts, end_ts, validator_hotkey=validator_hotkey
                 )
             )
             win_counts, loss_counts = self.score_store.win_loss_counts_in_window(
-                comp_value, since_ts, end_ts
+                comp_value, since_ts, end_ts, validator_hotkey=validator_hotkey
             )
             observer_counts = self.score_store.observer_records_in_window(
-                comp_value, since_ts, end_ts
+                comp_value,
+                since_ts,
+                end_ts,
+                validator_hotkey=validator_hotkey,
             )
         hotkeys_with_minimum_stake = [
             self.metagraph.hotkeys[uid]
@@ -673,9 +681,16 @@ class BaseValidatorNeuron(BaseNeuron):
         }
 
         comp_games = (
-            self.generic_store.games_in_window(comp_value, since_ts, end_ts)
+            self.generic_store.games_in_window(
+                comp_value, since_ts, end_ts, validator_hotkey=validator_hotkey
+            )
             if use_generic_scores
-            else self.score_store.games_in_window(since_ts, end_ts, comp_value)
+            else self.score_store.games_in_window(
+                since_ts,
+                end_ts,
+                comp_value,
+                validator_hotkey=validator_hotkey,
+            )
         )
         if comp_games < 30:
             self._log_competition_scores(

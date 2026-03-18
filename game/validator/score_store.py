@@ -278,7 +278,11 @@ class ScoreStore:
         return rows
 
     def window_average_scores_by_hotkey(
-        self, competition: Optional[str], since_ts: float, end_ts: float
+        self,
+        competition: Optional[str],
+        since_ts: float,
+        end_ts: float,
+        validator_hotkey: Optional[str] = None,
     ) -> Dict[str, float]:
         avg_scores: Dict[str, float] = defaultdict(float)
         total_scores: Dict[str, float] = defaultdict(float)
@@ -289,8 +293,11 @@ class ScoreStore:
             query = """
                 SELECT hotkey, SUM(score) * 1.0 / COUNT(*), SUM(score), COUNT(*) FROM miner_records
                 WHERE ts >= ? AND ts < ? AND competition = ?
-                GROUP BY hotkey
             """
+            if validator_hotkey:
+                query += " AND validator = ?"
+                params.append(validator_hotkey)
+            query += " GROUP BY hotkey"
             cur.execute(query, tuple(params))
             rows = cur.fetchall()
             for row in rows:
@@ -335,7 +342,11 @@ class ScoreStore:
         )
 
     def observer_records_in_window(
-        self, competition: str, since_ts: float, end_ts: float
+        self,
+        competition: str,
+        since_ts: float,
+        end_ts: float,
+        validator_hotkey: Optional[str] = None,
     ) -> Dict[str, int]:
         """Return counts of games where each hotkey participated only as an observer.
 
@@ -357,9 +368,19 @@ class ScoreStore:
                     AND mr.competition = ?
                     AND sa.competition = mr.competition
                     AND mr.hotkey NOT IN (sa.rs, sa.ro, sa.bs, sa.bo)
+                    AND (? = '' OR mr.validator = ?)
+                    AND (? = '' OR sa.validator = ?)
                 GROUP BY mr.hotkey
                 """,
-                (int(since_ts), int(end_ts), competition),
+                (
+                    int(since_ts),
+                    int(end_ts),
+                    competition,
+                    validator_hotkey or "",
+                    validator_hotkey or "",
+                    validator_hotkey or "",
+                    validator_hotkey or "",
+                ),
             )
             rows = cur.fetchall()
             cur.close()
@@ -367,7 +388,11 @@ class ScoreStore:
         return {hotkey: int(count) for hotkey, count in rows}
 
     def win_loss_counts_in_window(
-        self, competition: str, since_ts: float, end_ts: float
+        self,
+        competition: str,
+        since_ts: float,
+        end_ts: float,
+        validator_hotkey: Optional[str] = None,
     ) -> tuple[Dict[str, int], Dict[str, int]]:
         """Return per-hotkey win/loss counts from miner_records in the window.
 
@@ -383,9 +408,16 @@ class ScoreStore:
                     SUM(CASE WHEN score <= 0 THEN 1 ELSE 0 END) AS losses
                 FROM miner_records
                 WHERE ts >= ? AND ts < ? AND competition = ?
+                  AND (? = '' OR validator = ?)
                 GROUP BY hotkey
                 """,
-                (int(since_ts), int(end_ts), competition),
+                (
+                    int(since_ts),
+                    int(end_ts),
+                    competition,
+                    validator_hotkey or "",
+                    validator_hotkey or "",
+                ),
             )
             rows = cur.fetchall()
             cur.close()
@@ -404,16 +436,30 @@ class ScoreStore:
             return 0
         return int(row[0])
 
-    def latest_scores_all_timestamp(self) -> int:
+    def latest_scores_all_timestamp(
+        self, validator_hotkey: Optional[str] = None
+    ) -> int:
         with self._lock:
             cur = self.conn.cursor()
-            cur.execute("SELECT MAX(ended_at) FROM scores_all")
+            if validator_hotkey:
+                cur.execute(
+                    "SELECT MAX(ended_at) FROM scores_all WHERE validator = ?",
+                    (validator_hotkey,),
+                )
+            else:
+                cur.execute("SELECT MAX(ended_at) FROM scores_all")
             row = cur.fetchone()
             if not row or row[0] is None:
                 cur.execute("SELECT MAX(ended_at) FROM scores")
                 row = cur.fetchone()
             if not row or row[0] is None:
-                cur.execute("SELECT MAX(ts) FROM miner_records")
+                if validator_hotkey:
+                    cur.execute(
+                        "SELECT MAX(ts) FROM miner_records WHERE validator = ?",
+                        (validator_hotkey,),
+                    )
+                else:
+                    cur.execute("SELECT MAX(ts) FROM miner_records")
                 row = cur.fetchone()
             cur.close()
         if not row or row[0] is None:
@@ -421,7 +467,11 @@ class ScoreStore:
         return int(row[0])
 
     def games_in_window(
-        self, since_ts: float, end_ts: float, competition: Optional[str] = None
+        self,
+        since_ts: float,
+        end_ts: float,
+        competition: Optional[str] = None,
+        validator_hotkey: Optional[str] = None,
     ) -> int:
         with self._lock:
             cur = self.conn.cursor()
@@ -432,6 +482,9 @@ class ScoreStore:
             if competition is not None:
                 query += " AND competition = ?"
                 params.append(competition)
+            if validator_hotkey:
+                query += " AND validator = ?"
+                params.append(validator_hotkey)
             cur.execute(query, tuple(params))
             row = cur.fetchone()
             if row and row[0]:
@@ -439,14 +492,16 @@ class ScoreStore:
             else:
                 count = 0
                 if competition is not None:
-                    cur.execute(
-                        """
+                    fallback_query = """
                         SELECT COUNT(DISTINCT room_id)
                         FROM miner_records
                         WHERE ts >= ? AND ts < ? AND competition = ?
-                        """,
-                        (int(since_ts), int(end_ts), competition),
-                    )
+                    """
+                    fallback_params = [int(since_ts), int(end_ts), competition]
+                    if validator_hotkey:
+                        fallback_query += " AND validator = ?"
+                        fallback_params.append(validator_hotkey)
+                    cur.execute(fallback_query, tuple(fallback_params))
                     row2 = cur.fetchone()
                     if row2 and row2[0]:
                         count = int(row2[0])
