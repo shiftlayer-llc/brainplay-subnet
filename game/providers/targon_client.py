@@ -42,7 +42,7 @@ async def _check_image_hash(self, endpoint: str, uid: int | None = None) -> bool
         bool: True if the image hash matches, False otherwise.
     """
     try:
-        url = f"https://api.targon.com/v1/deployments/image-hash"
+        url = f"https://api.targon.com/tha/v2/workloads/verify"
         headers = {
             "Authorization": f"Bearer {os.getenv('TARGON_API_KEY')}",
             "Content-Type": "application/json",
@@ -56,18 +56,14 @@ async def _check_image_hash(self, endpoint: str, uid: int | None = None) -> bool
                 if response.status != 200:
                     body = await response.text()
                     uid_text = "?" if uid is None else str(uid)
-                    _log_yellow_info(
-                        f"{uid_text} {endpoint}: {response.status} {body}"
-                    )
+                    _log_yellow_info(f"{uid_text} {endpoint}: {response.status} {body}")
                     return False
                 try:
                     data = await response.json()
                 except aiohttp.ContentTypeError:
                     body = await response.text()
                     uid_text = "?" if uid is None else str(uid)
-                    _log_yellow_info(
-                        f"{uid_text} {endpoint}: invalid_json {body}"
-                    )
+                    _log_yellow_info(f"{uid_text} {endpoint}: invalid_json {body}")
                     return False
                 if "image_hash" in data:
                     if data.get("image_hash") == __image_hash__:

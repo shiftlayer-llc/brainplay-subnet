@@ -132,25 +132,35 @@ class GenericStore:
             )
 
     def window_average_scores_by_hotkey(
-        self, competition_code: str, since_ts: float, end_ts: float
+        self,
+        competition_code: str,
+        since_ts: float,
+        end_ts: float,
+        validator_hotkey: str | None = None,
     ):
         query = """
             SELECT a.miner_hotkey, AVG(a.score), SUM(a.score), COUNT(*)
             FROM attempts a
             JOIN sessions s ON s.session_id = a.session_id
             WHERE s.competition_code = ? AND a.ended_at >= ? AND a.ended_at < ?
-            GROUP BY a.miner_hotkey
         """
-        rows = self.conn.execute(
-            query, (competition_code, int(since_ts), int(end_ts))
-        ).fetchall()
+        params = [competition_code, int(since_ts), int(end_ts)]
+        if validator_hotkey:
+            query += " AND s.validator_hotkey = ?"
+            params.append(validator_hotkey)
+        query += " GROUP BY a.miner_hotkey"
+        rows = self.conn.execute(query, tuple(params)).fetchall()
         avg_scores = {hotkey: float(avg or 0.0) for hotkey, avg, _, _ in rows}
         total_scores = {hotkey: float(total or 0.0) for hotkey, _, total, _ in rows}
         counts = {hotkey: float(count or 0.0) for hotkey, _, _, count in rows}
         return avg_scores, total_scores, counts
 
     def win_loss_counts_in_window(
-        self, competition_code: str, since_ts: float, end_ts: float
+        self,
+        competition_code: str,
+        since_ts: float,
+        end_ts: float,
+        validator_hotkey: str | None = None,
     ) -> tuple[Dict[str, int], Dict[str, int]]:
         query = """
             SELECT
@@ -160,41 +170,64 @@ class GenericStore:
             FROM attempts a
             JOIN sessions s ON s.session_id = a.session_id
             WHERE s.competition_code = ? AND a.ended_at >= ? AND a.ended_at < ?
-            GROUP BY a.miner_hotkey
         """
-        rows = self.conn.execute(
-            query, (competition_code, int(since_ts), int(end_ts))
-        ).fetchall()
+        params = [competition_code, int(since_ts), int(end_ts)]
+        if validator_hotkey:
+            query += " AND s.validator_hotkey = ?"
+            params.append(validator_hotkey)
+        query += " GROUP BY a.miner_hotkey"
+        rows = self.conn.execute(query, tuple(params)).fetchall()
         wins = {str(hotkey): int(win_count or 0) for hotkey, win_count, _ in rows}
         losses = {str(hotkey): int(loss_count or 0) for hotkey, _, loss_count in rows}
         return wins, losses
 
     def games_in_window(
-        self, competition_code: str, since_ts: float, end_ts: float
+        self,
+        competition_code: str,
+        since_ts: float,
+        end_ts: float,
+        validator_hotkey: str | None = None,
     ) -> int:
-        row = self.conn.execute(
-            """
+        query = """
             SELECT COUNT(DISTINCT s.session_id)
             FROM sessions s
             WHERE s.competition_code = ? AND s.ended_at >= ? AND s.ended_at < ?
-            """,
-            (competition_code, int(since_ts), int(end_ts)),
-        ).fetchone()
+        """
+        params = [competition_code, int(since_ts), int(end_ts)]
+        if validator_hotkey:
+            query += " AND s.validator_hotkey = ?"
+            params.append(validator_hotkey)
+        row = self.conn.execute(query, tuple(params)).fetchone()
         return int(row[0] or 0) if row else 0
 
-    def latest_timestamp(self, competition_code: Optional[str] = None) -> int:
+    def latest_timestamp(
+        self,
+        competition_code: Optional[str] = None,
+        validator_hotkey: str | None = None,
+    ) -> int:
         if competition_code is None:
-            row = self.conn.execute("SELECT MAX(ended_at) FROM attempts").fetchone()
+            query = """
+                SELECT MAX(a.ended_at)
+                FROM attempts a
+                JOIN sessions s ON s.session_id = a.session_id
+            """
+            params: list[object] = []
+            if validator_hotkey:
+                query += " WHERE s.validator_hotkey = ?"
+                params.append(validator_hotkey)
+            row = self.conn.execute(query, tuple(params)).fetchone()
         else:
-            row = self.conn.execute(
-                """
+            query = """
                 SELECT MAX(a.ended_at)
                 FROM attempts a
                 JOIN sessions s ON s.session_id = a.session_id
                 WHERE s.competition_code = ?
-                """,
-                (competition_code,),
-            ).fetchone()
+            """
+            params: list[object] = [competition_code]
+            if validator_hotkey:
+                query += " AND s.validator_hotkey = ?"
+                params.append(validator_hotkey)
+            row = self.conn.execute(query, tuple(params)).fetchone()
         return int(row[0] or 0) if row else 0
 
     def iter_attempts(self) -> Iterable[tuple]:
