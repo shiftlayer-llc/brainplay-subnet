@@ -105,7 +105,11 @@ class ChutesAIJudge:
         ]
 
         try:
-            model_candidates = [self.model, "openai/gpt-oss-120b-TEE"]
+            model_candidates = [
+                self.model,
+                "openai/gpt-oss-20b-TEE",
+                "openai/gpt-oss-120b-TEE",
+            ]
             # Keep order while deduplicating.
             deduped_models = []
             for candidate in model_candidates:
@@ -143,6 +147,12 @@ class ChutesAIJudge:
                     last_err = err
                     bt.logging.warning(
                         f"[20Q] Judge model not found: {candidate_model}; trying next."
+                    )
+                    continue
+                except Exception as err:  # noqa: BLE001
+                    last_err = err
+                    bt.logging.warning(
+                        f"[20Q] Judge model failed: {candidate_model}; error={err}; trying next."
                     )
                     continue
 
