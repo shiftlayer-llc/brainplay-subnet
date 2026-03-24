@@ -3,6 +3,7 @@ import bittensor as bt
 import asyncio
 import aiohttp
 from game.common.epistula import generate_header
+from game.common.targon import extract_workload_uid, normalize_endpoint_url
 from game import __image_hash__
 
 
@@ -20,7 +21,7 @@ async def get_metadata(self, endpoint: str, hotkey: str) -> dict:
         dict: The metadata dictionary if successful, empty dict otherwise.
     """
     try:
-        url = f"https://{endpoint}.serverless.targon.com/meta"
+        url = f"{normalize_endpoint_url(endpoint)}/meta"
         headers = generate_header(self.wallet.hotkey, b"", hotkey)
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=headers) as response:
@@ -43,35 +44,56 @@ async def _check_image_hash(self, endpoint: str, uid: int | None = None) -> bool
     """
     try:
         url = f"https://api.targon.com/tha/v2/workloads/verify"
+        workload_uid = extract_workload_uid(endpoint)
         headers = {
             "Authorization": f"Bearer {os.getenv('TARGON_API_KEY')}",
             "Content-Type": "application/json",
         }
         async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url,
-                headers=headers,
-                json={"url": f"https://{endpoint}.serverless.targon.com"},
-            ) as response:
-                if response.status != 200:
-                    body = await response.text()
-                    uid_text = "?" if uid is None else str(uid)
-                    _log_yellow_info(f"{uid_text} {endpoint}: {response.status} {body}")
-                    return False
-                try:
-                    data = await response.json()
-                except aiohttp.ContentTypeError:
-                    body = await response.text()
-                    uid_text = "?" if uid is None else str(uid)
-                    _log_yellow_info(f"{uid_text} {endpoint}: invalid_json {body}")
-                    return False
-                if "image_hash" in data:
-                    if data.get("image_hash") == __image_hash__:
-                        return True
-                    bt.logging.info(
-                        f"Image hash mismatch for endpoint {endpoint}: "
-                        f"expected {__image_hash__}, got {data.get('image_hash')}"
-                    )
+            payloads = [{"uid": workload_uid, "digest": __image_hash__}]
+            normalized_url = normalize_endpoint_url(endpoint)
+            if workload_uid.startswith("serv-"):
+                payloads.append({"url": normalized_url})
+
+            response = None
+            data = None
+            for payload in payloads:
+                async with session.post(
+                    url,
+                    headers=headers,
+                    json=payload,
+                ) as current_response:
+                    response = current_response
+                    if current_response.status != 200:
+                        continue
+                    try:
+                        data = await current_response.json()
+                    except aiohttp.ContentTypeError:
+                        body = await current_response.text()
+                        uid_text = "?" if uid is None else str(uid)
+                        _log_yellow_info(f"{uid_text} {endpoint}: invalid_json {body}")
+                        return False
+                    break
+
+            if response is None or response.status != 200:
+                body = await response.text() if response is not None else "no_response"
+                uid_text = "?" if uid is None else str(uid)
+                _log_yellow_info(
+                    f"{uid_text} {endpoint}: {response.status if response else 'n/a'} {body}"
+                )
+                return False
+
+            if "verified" in (data or {}):
+                if bool(data.get("verified")):
+                    return True
+            elif "image_hash" in (data or {}):
+                if data.get("image_hash") == __image_hash__:
+                    return True
+
+            bt.logging.info(
+                f"Image digest verification failed for endpoint {endpoint}: "
+                f"workload_uid={workload_uid}"
+            )
         return False
     except Exception as e:
         uid_text = "?" if uid is None else str(uid)

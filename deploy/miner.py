@@ -6,15 +6,14 @@ import sys
 import time
 from hashlib import sha256
 from pathlib import Path
-from urllib.parse import urlparse
 from uuid import uuid4
 from dotenv import load_dotenv
 
 import bittensor as bt
 import httpx
 from targon.cli.auth import get_stored_key
-from targon.client.client import Client
-from targon.utils.config_parser import load_config, config_to_serverless_requests
+from targon.utils.config_parser import load_config
+from game.common.targon import extract_workload_uid, normalize_endpoint_url
 
 bt.logging.off()
 
@@ -25,6 +24,7 @@ DEPLOY_DIR = Path(__file__).resolve().parent
 PROFILES_DIR = DEPLOY_DIR / "profiles"
 META_REQUEST_TIMEOUT_SEC = 30
 META_POLL_INTERVAL_SEC = 3
+TARGON_WORKLOADS_API = "https://api.targon.com/tha/v2/workloads"
 
 
 def _ensure_typing_self() -> None:
@@ -73,45 +73,102 @@ def _get_api_key() -> str:
     raise RuntimeError("TARGON_API_KEY not set and no stored credentials found.")
 
 
-def _deploy_targon(config_path: Path) -> dict[str, str]:
+def _targon_headers(api_key: str) -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+
+def _build_workload_payload(container) -> dict:
+    replicas = container.replicas
+    min_replicas = 1
+    max_replicas = 1
+    target_concurrency = 100
+    container_concurrency = 100
+    if replicas is not None:
+        min_replicas = 0 if getattr(replicas, "scale_to_zero", False) else replicas.min
+        max_replicas = replicas.max
+        target_concurrency = replicas.target_concurrency
+        container_concurrency = replicas.container_concurrency
+
+    payload = {
+        "name": container.name,
+        "image": container.image,
+        "resource_name": container.resource or "cpu-small",
+        "type": "SERVERLESS",
+        "serverless_config": {
+            "min_replicas": min_replicas,
+            "max_replicas": max_replicas,
+            "initial_replicas": max(1, min_replicas),
+            "container_concurrency": container_concurrency,
+            "target_concurrency": target_concurrency,
+        },
+    }
+
+    if container.port:
+        payload["ports"] = [
+            {
+                "port": int(container.port),
+                "protocol": "TCP",
+                "routing": "DIRECT" if container.internal else "PROXIED",
+            }
+        ]
+    if container.env:
+        payload["envs"] = [
+            {"name": str(name), "value": str(value)}
+            for name, value in container.env.items()
+        ]
+    if container.command:
+        payload["commands"] = list(container.command)
+    if container.args:
+        payload["args"] = list(container.args)
+    if container.registry:
+        payload["registry_auth"] = {
+            "server": container.registry.server or "https://index.docker.io/v1/",
+            "username": container.registry.username or "",
+            "password": container.registry.password or "",
+        }
+
+    return payload
+
+
+def _deploy_targon(config_path: Path) -> dict[str, dict[str, str]]:
     _ensure_typing_self()
 
     config = load_config(config_path)
-    requests = config_to_serverless_requests(config)
-    if not requests:
+    containers = list(getattr(config, "containers", []) or [])
+    if not containers:
         raise RuntimeError(f"No containers defined in {config_path}")
 
     api_key = _get_api_key()
-    client = Client(api_key=api_key)
+    headers = _targon_headers(api_key)
 
-    async def _deploy():
-        responses: dict[str, str] = {}
-        for request in requests:
-            resource = await client.async_serverless.deploy_container(request)
-            responses[request.name] = resource.uid
-        return responses
+    responses: dict[str, dict[str, str]] = {}
+    with httpx.Client(timeout=60) as client:
+        for container in containers:
+            payload = _build_workload_payload(container)
+            create_resp = client.post(
+                TARGON_WORKLOADS_API,
+                headers=headers,
+                json=payload,
+            )
+            create_resp.raise_for_status()
+            created = create_resp.json()
+            workload_uid = str(created.get("uid") or "").strip()
+            if not workload_uid:
+                raise RuntimeError(
+                    f"Targon create workload response missing uid for {container.name}"
+                )
 
-    return client.run_async(_deploy)
+            deploy_resp = client.post(
+                f"{TARGON_WORKLOADS_API}/{workload_uid}/deploy",
+                headers=headers,
+            )
+            deploy_resp.raise_for_status()
+            responses[container.name] = {"uid": workload_uid}
 
-
-def _build_endpoint_url(endpoint_uid: str) -> str:
-    endpoint = endpoint_uid.strip().rstrip("/")
-    if endpoint.startswith(("http://", "https://")):
-        return endpoint
-    if "serverless.targon.com" in endpoint:
-        return f"https://{endpoint}"
-    return f"https://{endpoint}.serverless.targon.com"
-
-
-def _normalize_endpoint_uid(endpoint_uid: str) -> str:
-    endpoint = endpoint_uid.strip().rstrip("/")
-    if endpoint.startswith(("http://", "https://")):
-        host = urlparse(endpoint).netloc
-        if host:
-            endpoint = host
-    if endpoint.endswith(".serverless.targon.com"):
-        endpoint = endpoint.split(".serverless.targon.com", 1)[0]
-    return endpoint
+    return responses
 
 
 def _build_epistula_headers(hotkey: bt.Keypair, signed_for: str) -> dict[str, str]:
@@ -139,30 +196,47 @@ def _render_config_with_name(
 
 
 def _delete_targon_container(endpoint_uid: str) -> None:
-    _ensure_typing_self()
     api_key = _get_api_key()
-    client = Client(api_key=api_key)
-    resource_id = _normalize_endpoint_uid(endpoint_uid)
+    headers = _targon_headers(api_key)
+    workload_uid = extract_workload_uid(endpoint_uid)
+    with httpx.Client(timeout=30) as client:
+        response = client.delete(
+            f"{TARGON_WORKLOADS_API}/{workload_uid}", headers=headers
+        )
+        if response.status_code not in (200, 202, 204):
+            raise RuntimeError(
+                f"Failed deleting workload {workload_uid}: {response.status_code} {response.text}"
+            )
 
-    async def _delete():
-        return await client.async_serverless.delete_container(resource_id)
 
-    client.run_async(_delete)
+def _extract_access_url(state_payload: dict) -> str:
+    urls = state_payload.get("urls") or []
+    if not isinstance(urls, list):
+        return ""
+    for item in urls:
+        if isinstance(item, dict):
+            url = str(item.get("url") or "").strip()
+            if url:
+                return url.rstrip("/")
+    return ""
 
 
-def _wait_for_endpoint_ready(endpoint_uid: str, hotkey: bt.Keypair) -> bool:
-    base_url = _build_endpoint_url(endpoint_uid)
-    meta_url = f"{base_url}/meta"
+def _wait_for_endpoint_ready(workload_uid: str, hotkey: bt.Keypair) -> str | None:
+    api_key = _get_api_key()
+    workload_uid = extract_workload_uid(workload_uid)
+    headers = _targon_headers(api_key)
 
     with httpx.Client(timeout=META_REQUEST_TIMEOUT_SEC) as client:
         frame_idx = 0
         last_len = 0
         while True:
-            status_message = f"⏳ Waiting for endpoint readiness: {base_url}"
-            headers = _build_epistula_headers(hotkey, hotkey.ss58_address)
             try:
-                response = client.get(meta_url, headers=headers)
+                state_response = client.get(
+                    f"{TARGON_WORKLOADS_API}/{workload_uid}/state",
+                    headers=headers,
+                )
             except httpx.HTTPError as exc:
+                status_message = "⏳ waiting for workload state"
                 dots = "." * ((frame_idx % 3) + 1)
                 message = f"{status_message} {dots}"
                 last_len = _print_status_line(message, last_len)
@@ -170,52 +244,83 @@ def _wait_for_endpoint_ready(endpoint_uid: str, hotkey: bt.Keypair) -> bool:
                 time.sleep(META_POLL_INTERVAL_SEC)
                 continue
 
-            if response.status_code == 200:
+            status_message = f"⏳ waiting for workload state: {workload_uid}"
+            if state_response.status_code == 200:
                 try:
-                    payload = response.json()
+                    state_payload = state_response.json()
                 except ValueError:
+                    state_payload = {}
                     status_message = (
-                        "⏳ waiting for endpoint readiness: invalid JSON response"
+                        "⚠️ waiting for workload state: invalid JSON response"
                     )
                 else:
-                    sglang_process = payload.get("sglang_process") or {}
-                    returncode = sglang_process.get("returncode")
-                    running = sglang_process.get("running")
-                    if isinstance(returncode, int) and returncode < 0:
+                    workload_status = str(state_payload.get("status") or "").strip()
+                    access_url = _extract_access_url(state_payload)
+                    if workload_status and "fail" in workload_status.lower():
                         print()
                         print(
-                            "SGLang process crashed with returncode "
-                            f"{returncode}. Deleting deployed app..."
+                            f"❌ workload {workload_uid} entered status={workload_status}. "
+                            "Deleting deployed app."
+                        )
+                        _delete_targon_container(workload_uid)
+                        return None
+                    if access_url:
+                        meta_headers = _build_epistula_headers(
+                            hotkey, hotkey.ss58_address
                         )
                         try:
-                            _delete_targon_container(endpoint_uid)
-                        except Exception as exc:
-                            print(
-                                f"Failed to delete deployed app {endpoint_uid}: {exc}",
-                                file=sys.stderr,
+                            meta_response = client.get(
+                                f"{normalize_endpoint_url(access_url)}/meta",
+                                headers=meta_headers,
                             )
-                        return False
+                        except httpx.HTTPError:
+                            status_message = (
+                                f"⏳ waiting for endpoint readiness: {access_url}"
+                            )
+                        else:
+                            if meta_response.status_code == 200:
+                                try:
+                                    payload = meta_response.json()
+                                except ValueError:
+                                    status_message = "⚠️ waiting for endpoint readiness: invalid JSON response"
+                                else:
+                                    sglang_process = payload.get("sglang_process") or {}
+                                    returncode = sglang_process.get("returncode")
+                                    running = sglang_process.get("running")
+                                    if isinstance(returncode, int) and returncode < 0:
+                                        print()
+                                        print(
+                                            "❌ SGLang process crashed with returncode "
+                                            f"{returncode}. Deleting deployed app."
+                                        )
+                                        _delete_targon_container(workload_uid)
+                                        return None
 
-                    if running is True:
-                        status_message = "⏳ sglang is loading model"
-                    elif running is False:
-                        status_message = "⚠️ sglang process not running"
-                    else:
-                        status_message = "⏳ waiting for sglang process"
-                    if payload.get("sglang_port_open") is True:
-                        message = f"✅ Endpoint ready: {base_url}"
-                        _print_status_line(message, last_len)
-                        print()
-                        return True
-            else:
-                body = response.text.strip()
+                                    if payload.get("sglang_port_open") is True:
+                                        message = f"✅ Endpoint ready: {access_url}"
+                                        _print_status_line(message, last_len)
+                                        print()
+                                        return normalize_endpoint_url(access_url)
+
+                                    if running is True:
+                                        status_message = "⏳ SGLang is loading model"
+                                    elif running is False:
+                                        status_message = "⚠️ SGLang process not running"
+                                    else:
+                                        status_message = "⏳ waiting for SGLang process"
+                            else:
+                                status_message = (
+                                    f"⏳ waiting for endpoint readiness: {access_url}"
+                                )
+                    elif workload_status:
+                        status_message = f"⏳ workload status={workload_status}"
 
             dots = "." * ((frame_idx % 3) + 1)
             message = f"{status_message} {dots}"
             last_len = _print_status_line(message, last_len)
             frame_idx += 1
             time.sleep(META_POLL_INTERVAL_SEC)
-    return False
+    return None
 
 
 def _print_status_line(message: str, last_len: int) -> int:
@@ -370,19 +475,24 @@ def main() -> int:
         print(f"Failed to deploy via Targon: {exc}", file=sys.stderr)
         return 1
 
-    endpoint_uid = deployed.get(container_name)
-    if endpoint_uid is None:
+    deployed_info = deployed.get(container_name)
+    if deployed_info is None:
         if len(deployed) == 1:
-            endpoint_uid = next(iter(deployed.values()))
+            deployed_info = next(iter(deployed.values()))
         else:
             print(
                 f"Expected container '{container_name}' but got {sorted(deployed)}",
                 file=sys.stderr,
             )
             return 1
+    workload_uid = str((deployed_info or {}).get("uid") or "").strip()
+    if not workload_uid:
+        print("Failed to determine workload uid from Targon response.", file=sys.stderr)
+        return 1
 
     try:
-        if not _wait_for_endpoint_ready(endpoint_uid, wallet.hotkey):
+        endpoint_url = _wait_for_endpoint_ready(workload_uid, wallet.hotkey)
+        if not endpoint_url:
             return 1
     except Exception as exc:
         print(f"Failed to confirm endpoint readiness: {exc}", file=sys.stderr)
@@ -394,14 +504,14 @@ def main() -> int:
             network=args.network,
             netuid=args.netuid,
             competition_keys=competition_keys,
-            endpoint_uid=endpoint_uid,
+            endpoint_uid=endpoint_url,
             period=args.commit_period,
         )
     except Exception as exc:
         print(f"Failed to commit endpoint: {exc}", file=sys.stderr)
         return 1
 
-    print(f"✅ Successfully committed endpoint {endpoint_uid} to chain.")
+    print(f"✅ Successfully committed endpoint {endpoint_url} to chain.")
     return 0
 
 

@@ -426,10 +426,16 @@ class ScoreStore:
         losses = {str(hotkey): int(loss_count or 0) for hotkey, _, loss_count in rows}
         return wins, losses
 
-    def max_scores_all_id(self) -> int:
+    def max_scores_all_id(self, validator_hotkey: Optional[str] = None) -> int:
         with self._lock:
             cur = self.conn.cursor()
-            cur.execute("SELECT MAX(id) FROM scores_all")
+            if validator_hotkey:
+                cur.execute(
+                    "SELECT MAX(id) FROM scores_all WHERE validator = ?",
+                    (validator_hotkey,),
+                )
+            else:
+                cur.execute("SELECT MAX(id) FROM scores_all")
             row = cur.fetchone()
             cur.close()
         if not row or row[0] is None:
