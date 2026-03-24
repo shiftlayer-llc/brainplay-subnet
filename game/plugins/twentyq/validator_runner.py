@@ -17,6 +17,7 @@ from openai import OpenAI
 
 from game.common.epistula import generate_header
 from game.common.misc import extract_json
+from game.common.targon import normalize_endpoint_url
 from game.core.commitment_reader import read_endpoints
 from game.core.interfaces import AttemptResult, SessionResult
 from game.plugins.codenames.game_types import Competition
@@ -732,11 +733,4 @@ class TwentyQValidatorRunner:
 
     @staticmethod
     def _endpoint_base_url(endpoint: str) -> str:
-        endpoint = (endpoint or "").strip().rstrip("/")
-        if endpoint.startswith(("http://", "https://")):
-            if endpoint.endswith(".serverless.targon.com"):
-                return endpoint
-            return endpoint
-        if ".serverless.targon.com" in endpoint:
-            return f"https://{endpoint}"
-        return f"https://{endpoint}.serverless.targon.com"
+        return normalize_endpoint_url(endpoint)

@@ -26,6 +26,7 @@ import httpx
 from game.protocol import GameChatMessage, GameSynapse, GameSynapseOutput
 from game.common.epistula import generate_header
 from game.common.misc import extract_json
+from game.common.targon import normalize_endpoint_url
 from game.plugins.codenames.prompt_loader import (
     get_op_sys_prompt,
     get_spy_sys_prompt,
@@ -272,7 +273,7 @@ async def get_tvm_response(
             http_client = httpx.Client(event_hooks={"request": [_epistula_hook]})
             client = OpenAI(
                 api_key="",
-                base_url=f"https://{endpoint}.serverless.targon.com/v1",
+                base_url=f"{normalize_endpoint_url(endpoint)}/v1",
                 http_client=http_client,
             )
             result = await asyncio.wait_for(
@@ -729,7 +730,9 @@ async def forward(self):
             bt.logging.info(f"Guessed cards: {guesses}")
             if guesses is None or len(guesses) == 0:
                 invalid_respond_counts[to_uid] += 1
-                bt.logging.info(f"⚠️ No guesses '{guesses}' provided by miner {to_uid}.")
+                bt.logging.info(
+                    f"⚠️ No guesses '{guesses}' provided by miner {to_uid}."
+                )
                 if invalid_respond_counts[to_uid] < 2:
                     # Switch turn to the other team
                     game_state.chatHistory.append(
