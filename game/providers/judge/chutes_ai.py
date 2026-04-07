@@ -108,7 +108,9 @@ class ChutesAIJudge:
             model_candidates = [
                 self.model,
                 "openai/gpt-oss-20b-TEE",
+                "Qwen/Qwen3.5-397B-A17B-TEE",
                 "openai/gpt-oss-120b-TEE",
+                "gpt-5.4-mini",
             ]
             # Keep order while deduplicating.
             deduped_models = []
