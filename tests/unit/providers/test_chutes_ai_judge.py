@@ -73,6 +73,10 @@ def test_chutes_ai_tries_alternative_model_before_heuristic(monkeypatch):
             if model == "openai/gpt-oss-120b-TEE":
                 raise RuntimeError("Error code: 429")
             if model == "openai/gpt-oss-20b-TEE":
+                raise RuntimeError("Error code: 429")
+            if model == "Qwen/Qwen3.5-397B-A17B-TEE":
+                raise RuntimeError("Error code: 503")
+            if model == "gpt-5.4-mini":
                 return _Result('{"answer":"yes","reasoning":"fallback model worked"}')
             raise AssertionError(f"unexpected model {model}")
 
@@ -93,5 +97,10 @@ def test_chutes_ai_tries_alternative_model_before_heuristic(monkeypatch):
     )
     answer = asyncio.run(judge.answer(secret="apple", question="Is it a fruit?"))
 
-    assert calls == ["openai/gpt-oss-120b-TEE", "openai/gpt-oss-20b-TEE"]
+    assert calls == [
+        "openai/gpt-oss-120b-TEE",
+        "openai/gpt-oss-20b-TEE",
+        "Qwen/Qwen3.5-397B-A17B-TEE",
+        "gpt-5.4-mini",
+    ]
     assert answer == "yes"
