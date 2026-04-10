@@ -26,7 +26,7 @@ class GameRegistry:
     def __init__(self) -> None:
         self._by_game_code: Dict[str, GamePlugin] = {}
         self._by_competition_code: Dict[str, GamePlugin] = {}
-        self._by_mechid: Dict[int, GamePlugin] = {}
+        self._by_mechid: Dict[int, List[GamePlugin]] = {}
         self._lock = threading.RLock()
 
     def clear(self) -> None:
@@ -58,13 +58,11 @@ class GameRegistry:
                 plugin,
                 f"competition_code={competition_code}",
             )
-            self._check_conflict(
-                self._by_mechid.get(mechid), plugin, f"mechid={mechid}"
-            )
-
             self._by_game_code[game_code] = plugin
             self._by_competition_code[competition_code] = plugin
-            self._by_mechid[mechid] = plugin
+            matches = self._by_mechid.setdefault(mechid, [])
+            if plugin not in matches:
+                matches.append(plugin)
 
         return plugin
 
@@ -93,9 +91,15 @@ class GameRegistry:
     def get_by_mechid(self, mechid: int) -> GamePlugin:
         with self._lock:
             try:
-                return self._by_mechid[int(mechid)]
+                matches = self._by_mechid[int(mechid)]
             except KeyError as exc:
                 raise KeyError(f"Unknown mechid: {mechid!r}") from exc
+            if len(matches) != 1:
+                raise KeyError(
+                    f"mechid={mechid!r} maps to multiple plugins; "
+                    "resolve by game_code or competition_code instead"
+                )
+            return matches[0]
 
     def maybe_get_by_game_code(self, game_code: str) -> Optional[GamePlugin]:
         key = _norm(game_code)

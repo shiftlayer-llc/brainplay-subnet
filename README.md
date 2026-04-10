@@ -246,6 +246,16 @@ python deploy/miner.py \
   --hotkey default
 ```
 
+Deploy only for SuperMario:
+
+```bash
+python deploy/miner.py \
+  --competition supermario \
+  --model "your-org/your-model" \
+  --wallet owner \
+  --hotkey default
+```
+
 Deploy one endpoint and commit it for both currently supported competitions:
 
 ```bash
@@ -289,6 +299,7 @@ Current profiles include:
 
 - `deploy/profiles/codenames.json`
 - `deploy/profiles/twentyq.json`
+- `deploy/profiles/supermario.json`
 - `deploy/profiles/all.json`
 
 At the moment these files intentionally use the same container template. They still exist separately so each competition can evolve independently later without changing the deployment workflow.
@@ -313,10 +324,11 @@ Important env placeholders used in these JSON files:
 - `${MINER_HOTKEY}`: hotkey SS58 address from the wallet
 - `${REASONING}`: value passed via `--reasoning`
 
-#### Difference between `codenames.json`, `twentyq.json`, and `all.json`
+#### Difference between `codenames.json`, `twentyq.json`, `supermario.json`, and `all.json`
 
 - `codenames.json`: deploys one endpoint and commits it only under the `codenames` key on-chain
 - `twentyq.json`: deploys one endpoint and commits it only under the `twentyq` key on-chain
+- `supermario.json`: deploys one endpoint and commits it only under the `supermario` key on-chain
 - `all.json`: deploys one endpoint and commits the same endpoint under both `codenames` and `twentyq`
 
 That means `all.json` is for miners who want one shared model endpoint to serve multiple competitions. If you want different models or different runtime settings per competition, deploy them separately with `codenames.json` and `twentyq.json`.
@@ -328,7 +340,8 @@ The miner keeps the original plain JSON commitment format. After deployment, the
 ```json
 {
   "codenames": "serv-u-xxxxxxxxxxxxxxxx",
-  "twentyq": "serv-u-yyyyyyyyyyyyyyyy"
+  "twentyq": "serv-u-yyyyyyyyyyyyyyyy",
+  "supermario": "serv-u-zzzzzzzzzzzzzzzz"
 }
 ```
 

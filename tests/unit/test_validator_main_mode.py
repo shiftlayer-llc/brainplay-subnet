@@ -40,4 +40,5 @@ def test_main_mode_competition_codes_include_all_competitions():
     assert BaseValidatorNeuron._competition_codes_for_main() == [
         "codenames",
         "twentyq",
+        "supermario",
     ]

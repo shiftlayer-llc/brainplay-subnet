@@ -12,6 +12,8 @@ class CodenamesPlugin:
         self.game_code = info.game_code
         self.competition_code = info.competition_code
         self.mechid = info.mechid
+        self.weight_group = info.weight_group
+        self.publish_mechid = info.publish_mechid
         self.display_name = info.display_name
         self.protocol_version = "legacy-codenames@1"
 
