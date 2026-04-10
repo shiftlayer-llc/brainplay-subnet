@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import time
 from typing import Any
@@ -403,7 +404,13 @@ class SuperMarioValidatorRunner:
         body: dict[str, Any] | None,
     ) -> dict[str, Any]:
         endpoint = normalize_endpoint_url(participant.endpoint)
-        request_body = body if body is not None else b""
+        content: bytes | None = None
+        if body is not None:
+            content = json.dumps(body, separators=(",", ":")).encode("utf-8")
+            request_body: dict[str, Any] | bytes = content
+        else:
+            request_body = b""
+
         headers = generate_header(
             self.validator.wallet.hotkey,
             request_body,
@@ -411,7 +418,11 @@ class SuperMarioValidatorRunner:
         )
         request_kwargs = {"headers": headers}
         if body is not None:
-            request_kwargs["json"] = body
+            request_kwargs["content"] = content
+            request_kwargs["headers"] = {
+                **headers,
+                "Content-Type": "application/json",
+            }
         async with httpx.AsyncClient(timeout=self.request_timeout_sec) as client:
             response = await client.request(
                 method,
