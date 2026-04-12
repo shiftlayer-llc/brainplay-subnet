@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import time
@@ -49,9 +50,13 @@ class SuperMarioValidatorRunner:
             os.getenv("SUPERMARIO_REQUEST_TIMEOUT_SEC", "30")
         )
         self.max_create_room_attempts = 3
+        self.progress_log_interval_sec = float(
+            os.getenv("SUPERMARIO_PROGRESS_LOG_INTERVAL_SEC", "30")
+        )
 
     async def run_round(self) -> SessionResult:
         started_at = time.time()
+        bt.logging.info("[SUPERMARIO] Round start: syncing prior scores.")
         try:
             await asyncio.wait_for(
                 self.validator.score_store.sync_scores_all(), timeout=600
@@ -64,6 +69,9 @@ class SuperMarioValidatorRunner:
         selected_uids, endpoints = await self._discover_participants()
         if not selected_uids:
             ended_at = time.time()
+            bt.logging.info(
+                "[SUPERMARIO] Round skipped: no available miners after endpoint discovery."
+            )
             return SessionResult(
                 session_id=f"supermario-{uuid4().hex}",
                 game_code="supermario",
@@ -90,9 +98,16 @@ class SuperMarioValidatorRunner:
                 for uid in selected_uids
             ],
         )
+        bt.logging.info(
+            f"[SUPERMARIO] Creating backend room for {len(room.participants)} participant(s): "
+            f"uids={selected_uids} level={room.level} step_limit={room.step_limit}"
+        )
         created = await self._create_room(room)
         if not created:
             ended_at = time.time()
+            bt.logging.warning(
+                "[SUPERMARIO] Round skipped: backend room creation failed."
+            )
             return SessionResult(
                 session_id=room.room_id,
                 game_code="supermario",
@@ -104,6 +119,9 @@ class SuperMarioValidatorRunner:
                 metadata={"reason": "create_room_failed"},
             )
 
+        bt.logging.info(
+            f"[SUPERMARIO] Backend room ready: room_id={room.room_id}. Starting miner runs."
+        )
         await asyncio.gather(
             *(
                 self._run_attempt(room, participant)
@@ -112,6 +130,9 @@ class SuperMarioValidatorRunner:
             return_exceptions=False,
         )
 
+        bt.logging.info(
+            f"[SUPERMARIO] All miner attempts finished for room_id={room.room_id}. Computing scores."
+        )
         scores = compute_supermario_scores(room.participants)
         for participant in room.participants:
             participant.score = float(scores.get(participant.hotkey, 0.0))
@@ -122,6 +143,10 @@ class SuperMarioValidatorRunner:
             (participant.steps_count for participant in room.participants), default=0
         )
         await self._update_room(room)
+        bt.logging.info(
+            f"[SUPERMARIO] Final room update sent for room_id={room.room_id}; "
+            f"max_steps={room.step_count}. Uploading scores."
+        )
         await self._sync_scores(room)
 
         ended_at = time.time()
@@ -170,22 +195,42 @@ class SuperMarioValidatorRunner:
             for uid in self.validator.metagraph.uids
             if int(uid) not in exclude_set
         ]
+        bt.logging.info(
+            f"[SUPERMARIO] Discovering participants: eligible_uids={len(uids_to_ping)} "
+            f"excluded={len(exclude_set)}"
+        )
         endpoints = read_endpoints_for_competition(
             self.validator,
             competition_code="supermario",
             uids=uids_to_ping,
         )
         if not endpoints:
+            bt.logging.info(
+                "[SUPERMARIO] No committed supermario endpoints found for eligible miners."
+            )
             return [], {}
+        bt.logging.info(
+            f"[SUPERMARIO] Found {len(endpoints)} committed endpoint(s). Checking responsiveness."
+        )
         responsive_uids = await check_endpoints(self.validator, endpoints, timeout=30)
         if not responsive_uids:
+            bt.logging.info(
+                "[SUPERMARIO] No responsive supermario endpoints passed health checks."
+            )
             return [], {}
+        bt.logging.info(
+            f"[SUPERMARIO] Responsive miners selected: uids={sorted(responsive_uids)}"
+        )
         return sorted(responsive_uids), {uid: endpoints[uid] for uid in responsive_uids}
 
     async def _create_room(self, room: SuperMarioRoomState) -> bool:
         payload = make_create_payload(room)
-        for _ in range(self.max_create_room_attempts):
+        for attempt_idx in range(self.max_create_room_attempts):
             try:
+                bt.logging.info(
+                    f"[SUPERMARIO] Creating backend room attempt {attempt_idx + 1}/"
+                    f"{self.max_create_room_attempts}."
+                )
                 response = await self.backend.create_room("supermario", payload)
             except Exception as err:  # noqa: BLE001
                 bt.logging.warning(
@@ -199,6 +244,9 @@ class SuperMarioValidatorRunner:
             )
             if room_id:
                 room.room_id = str(room_id)
+                bt.logging.info(
+                    f"[SUPERMARIO] Backend room created successfully: room_id={room.room_id}"
+                )
                 return True
             await asyncio.sleep(2)
         return False
@@ -222,6 +270,9 @@ class SuperMarioValidatorRunner:
         reason = "completed" if room.status == "completed" else "aborted"
         payload = make_score_payload(room, reason=reason)
         try:
+            bt.logging.info(
+                f"[SUPERMARIO] Uploading {len(payload['scores'])} score(s) for room_id={room.room_id}."
+            )
             await self.validator.score_store.upload_scores(
                 room_id=room.room_id,
                 competition="supermario",
@@ -245,7 +296,12 @@ class SuperMarioValidatorRunner:
         room: SuperMarioRoomState,
         participant: SuperMarioAttemptState,
     ) -> None:
+        last_progress_log_at = 0.0
         try:
+            bt.logging.info(
+                f"[SUPERMARIO] Starting miner run: uid={participant.uid} "
+                f"hotkey={participant.hotkey} endpoint={participant.endpoint}"
+            )
             run_id = await self._start_run(participant, room)
         except Exception as err:  # noqa: BLE001
             participant.is_finished = True
@@ -257,6 +313,9 @@ class SuperMarioValidatorRunner:
             return
 
         participant.run_id = run_id
+        bt.logging.info(
+            f"[SUPERMARIO] Miner run started: uid={participant.uid} run_id={participant.run_id}"
+        )
         try:
             while True:
                 fetched_steps = await self._fetch_steps(participant)
@@ -273,6 +332,11 @@ class SuperMarioValidatorRunner:
                         [participant],
                         steps_by_hotkey={participant.hotkey: fetched_steps},
                     )
+                    bt.logging.info(
+                        f"[SUPERMARIO] Step update: uid={participant.uid} run_id={participant.run_id} "
+                        f"steps={participant.steps_count} progress={participant.progress_from_start:.1f} "
+                        f"env_score={participant.env_score:.1f} cursor={participant.step_cursor}"
+                    )
 
                 status = await self._fetch_status(participant)
                 if status.current is not None:
@@ -281,7 +345,20 @@ class SuperMarioValidatorRunner:
                     )
                     participant.env_score = float(status.current.score)
                     participant.elapsed_s = float(status.current.elapsed_s)
+                now = time.time()
+                if now - last_progress_log_at >= self.progress_log_interval_sec:
+                    bt.logging.info(
+                        f"[SUPERMARIO] Polling run: uid={participant.uid} run_id={participant.run_id} "
+                        f"state={status.state} steps={participant.steps_count} "
+                        f"progress={participant.progress_from_start:.1f} "
+                        f"env_score={participant.env_score:.1f} elapsed_s={participant.elapsed_s:.1f}"
+                    )
+                    last_progress_log_at = now
                 if status.state in {"succeeded", "failed"}:
+                    bt.logging.info(
+                        f"[SUPERMARIO] Run reached terminal state: uid={participant.uid} "
+                        f"run_id={participant.run_id} state={status.state}"
+                    )
                     break
                 await asyncio.sleep(self.poll_interval_sec)
 
@@ -301,12 +378,18 @@ class SuperMarioValidatorRunner:
                 )
 
             await self._finalize_attempt(participant, status)
+            await self._upload_video_artifact(room, participant, status)
         except Exception as err:  # noqa: BLE001
             participant.is_finished = True
             participant.finish_reason = "error"
             bt.logging.warning(
                 f"[SUPERMARIO] Attempt failed for uid={participant.uid} run_id={participant.run_id}: {err}"
             )
+        bt.logging.info(
+            f"[SUPERMARIO] Attempt finished: uid={participant.uid} run_id={participant.run_id} "
+            f"finish_reason={participant.finish_reason} steps={participant.steps_count} "
+            f"progress={participant.progress_from_start:.1f} env_score={participant.env_score:.1f}"
+        )
         await self._update_room(room, [participant])
 
     async def _finalize_attempt(
@@ -394,6 +477,84 @@ class SuperMarioValidatorRunner:
         steps = [SuperMarioStepPayload.model_validate(step) for step in raw_steps]
         participant.step_cursor = max(participant.step_cursor, next_cursor)
         return steps
+
+    async def _upload_video_artifact(
+        self,
+        room: SuperMarioRoomState,
+        participant: SuperMarioAttemptState,
+        status: SuperMarioRunStatus,
+    ) -> None:
+        video_url = None
+        if status.result is not None:
+            video_url = status.result.video_url or video_url
+        video_url = video_url or status.video_url
+        if not video_url:
+            bt.logging.info(
+                f"[SUPERMARIO] No video artifact reported for uid={participant.uid} run_id={participant.run_id}."
+            )
+            return
+
+        try:
+            video_bytes, mime_type = await self._fetch_video_bytes(
+                participant=participant,
+                video_url=video_url,
+            )
+        except Exception as err:  # noqa: BLE001
+            bt.logging.warning(
+                f"[SUPERMARIO] Failed to fetch video for uid={participant.uid} run_id={participant.run_id}: {err}"
+            )
+            return
+
+        payload = {
+            "validatorKey": room.validator_key,
+            "participant_hotkey": participant.hotkey,
+            "run_id": participant.run_id,
+            "mime_type": mime_type,
+            "mp4_base64": base64.b64encode(video_bytes).decode("ascii"),
+        }
+        try:
+            response = await self.backend.upload_room_video(
+                "supermario", room.room_id, payload
+            )
+        except Exception as err:  # noqa: BLE001
+            bt.logging.warning(
+                f"[SUPERMARIO] Failed to upload video for uid={participant.uid} run_id={participant.run_id}: {err}"
+            )
+            return
+
+        data = response.get("data") if isinstance(response, dict) else None
+        video_id = data.get("id") if isinstance(data, dict) else None
+        if video_id:
+            participant.last_video_id = str(video_id)
+            bt.logging.info(
+                f"[SUPERMARIO] Uploaded final video: uid={participant.uid} run_id={participant.run_id} video_id={participant.last_video_id}"
+            )
+
+    async def _fetch_video_bytes(
+        self,
+        *,
+        participant: SuperMarioAttemptState,
+        video_url: str,
+    ) -> tuple[bytes, str]:
+        endpoint = normalize_endpoint_url(participant.endpoint)
+        request_body = b""
+        headers = generate_header(
+            self.validator.wallet.hotkey,
+            request_body,
+            signed_for=participant.hotkey,
+        )
+        target_url = (
+            video_url
+            if video_url.startswith("http://") or video_url.startswith("https://")
+            else f"{endpoint}{video_url}"
+        )
+        async with httpx.AsyncClient(
+            timeout=max(self.request_timeout_sec, 120)
+        ) as client:
+            response = await client.get(target_url, headers=headers)
+            response.raise_for_status()
+            mime_type = response.headers.get("content-type", "video/mp4").split(";")[0]
+            return response.content, mime_type
 
     async def _request_json(
         self,

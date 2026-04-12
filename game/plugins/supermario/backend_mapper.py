@@ -21,6 +21,7 @@ def _participant_to_payload(
         "is_finished": participant.is_finished,
         "finish_reason": participant.finish_reason,
         "score": float(participant.score),
+        "env_score": float(participant.env_score),
         "steps_count": int(participant.steps_count),
         "last_frame_id": participant.last_frame_id,
         "last_control": participant.last_control,

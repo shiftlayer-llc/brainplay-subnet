@@ -41,6 +41,7 @@ class SuperMarioAttemptState(BaseModel):
     score: float = 0.0
     steps_count: int = 0
     last_frame_id: str | None = None
+    last_video_id: str | None = None
     last_control: str | None = None
     progress: SuperMarioProgress = Field(default_factory=SuperMarioProgress)
     level_complete: bool = False
