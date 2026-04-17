@@ -24,6 +24,8 @@ By observing AI models competing in games, users can intuitively grasp which mod
 ## 🎮 Implemented & Upcoming Games
 
 - ✅ Codenames (first implemented game)
+- ✅ 20 Questions (`twentyq`)
+- ✅ SuperMario (`supermario`) - first vision benchmark competition
 - 🚀 More games coming soon! (We plan to add more interesting games to further diversify benchmarking.)
 
 ### How `codenames` works
@@ -35,8 +37,22 @@ For comprehensive details about Codenames, please visit: [https://en.wikipedia.o
 
 Official rules PDF (stored in repo): [Codenames Rules](./docs/games/codenames%20-%20rules.pdf)
 
-### Next upcoming competition
-- [20 Questions](https://en.wikipedia.org/wiki/20Q)
+### How `twentyq` works
+1. A validator starts a shared 20 Questions room.
+2. Each selected miner answers yes/no style questions to infer the hidden target.
+3. Scores are persisted through the shared backend and generic score store.
+4. `twentyq` publishes through the shared `llm` weight group on `mechid=0`.
+
+For background on the game format, see: [20 Questions](https://en.wikipedia.org/wiki/20Q)
+
+### How `supermario` works
+1. A validator creates one shared SuperMario backend room.
+2. Each selected miner runs an isolated Mario benchmark attempt through its committed Targon endpoint.
+3. The validator polls each miner run, streams normalized step/frame updates to backend, and uploads the final video artifact when available.
+4. Final scores are round-relative: the best valid run gets `1.0`, other valid runs scale by progress, and failed/invalid runs score `0.0`.
+5. `supermario` publishes through the `vision` weight group on `mechid=1`.
+
+Canonical competition code is `supermario`. `mario` is accepted only as a temporary compatibility alias in deploy/profile handling.
 
 
 ## Rewards mechanism
@@ -55,6 +71,12 @@ The reward mechanism in Brainplay is designed to incentivize AI models (miners) 
    - The reward mechanism is designed to be transparent and fair, ensuring that all miners have an equal opportunity to earn rewards based on their performance in the game and their staking contributions.
 
 This reward system not only motivates the miners to perform better but also provides a clear and understandable metric for evaluating the effectiveness of different AI models in competitive scenarios, while also considering their staking commitments.
+
+### Weight groups and burn behavior
+
+- `codenames` and `twentyq` publish through the `llm` weight group on `mechid=0`.
+- `supermario` publishes through the `vision` weight group on `mechid=1`.
+- If a competition has no valid recent games, insufficient games, stale scores, no scores, or no valid winner, the validator publishes burn weights for that weight group instead of keeping stale miner weights.
 
 
 ## Installation
@@ -148,6 +170,32 @@ Run the validator manually and handle updates yourself:
 ```bash
 python neurons/validator.py --wallet.name test_validator --wallet.hotkey h1 --netuid 117 --logging.info
 ```
+
+Run only SuperMario:
+
+```bash
+python neurons/validator.py \
+  --wallet.name owner \
+  --wallet.hotkey default \
+  --netuid 335 \
+  --subtensor.network test \
+  --wandb.off \
+  --logging.info \
+  --competition supermario
+```
+
+Run one process per supported competition from the main launcher by omitting `--competition`:
+
+```bash
+python neurons/validator.py \
+  --wallet.name owner \
+  --wallet.hotkey default \
+  --netuid 335 \
+  --subtensor.network test \
+  --wandb.off \
+  --logging.info
+```
+
 or if you're using PM2
 
 ```bash
@@ -208,7 +256,7 @@ pip install -e .
 
 ```bash
 python deploy/miner.py \
-  --competition twentyq \
+  --competition supermario \
   --model "your-org/your-model" \
   --wallet owner \
   --hotkey default \
@@ -223,6 +271,7 @@ What this command does:
 - Deploys one serverless container on Targon
 - Waits until the `/meta` endpoint reports the server is ready
 - Commits the endpoint UID to chain under the selected competition key(s)
+- For `supermario`, validators also verify the deployed image hash before using the endpoint.
 
 #### Common miner commands
 
@@ -251,12 +300,12 @@ Deploy only for SuperMario:
 ```bash
 python deploy/miner.py \
   --competition supermario \
-  --model "your-org/your-model" \
+  --model "your-org/your-vlm-model" \
   --wallet owner \
   --hotkey default
 ```
 
-Deploy one endpoint and commit it for both currently supported competitions:
+Deploy one endpoint and commit it for the LLM competitions:
 
 ```bash
 python deploy/miner.py \
@@ -265,6 +314,8 @@ python deploy/miner.py \
   --wallet owner \
   --hotkey default
 ```
+
+`--competition all` currently commits under `codenames` and `twentyq`. Deploy SuperMario separately with `--competition supermario` because it is a vision benchmark and publishes through `mechid=1`.
 
 Pass extra SGLang flags if your model needs them:
 
@@ -300,6 +351,7 @@ Current profiles include:
 - `deploy/profiles/codenames.json`
 - `deploy/profiles/twentyq.json`
 - `deploy/profiles/supermario.json`
+- `deploy/profiles/mario.json` (temporary alias for `supermario`)
 - `deploy/profiles/all.json`
 
 At the moment these files intentionally use the same container template. They still exist separately so each competition can evolve independently later without changing the deployment workflow.
@@ -329,9 +381,23 @@ Important env placeholders used in these JSON files:
 - `codenames.json`: deploys one endpoint and commits it only under the `codenames` key on-chain
 - `twentyq.json`: deploys one endpoint and commits it only under the `twentyq` key on-chain
 - `supermario.json`: deploys one endpoint and commits it only under the `supermario` key on-chain
+- `mario.json`: short-lived compatibility alias; prefer `--competition supermario`
 - `all.json`: deploys one endpoint and commits the same endpoint under both `codenames` and `twentyq`
 
-That means `all.json` is for miners who want one shared model endpoint to serve multiple competitions. If you want different models or different runtime settings per competition, deploy them separately with `codenames.json` and `twentyq.json`.
+That means `all.json` is for miners who want one shared model endpoint to serve the LLM competitions. If you want different models or different runtime settings per competition, deploy them separately with `codenames.json`, `twentyq.json`, and `supermario.json`.
+
+SuperMario validators expect the miner endpoint to expose the Mario run API:
+
+- `POST /runs`
+- `GET /runs/{run_id}`
+- `GET /runs/{run_id}/steps?cursor=<n>`
+- `GET /runs/{run_id}/video`
+
+The current SuperMario image hash verified by validators is:
+
+```text
+4b9ba675ef3c8ca8b8e41dfe7636b5c72c507711befe76562d18326572efcfef
+```
 
 #### On-chain commitment shape
 
@@ -345,12 +411,20 @@ The miner keeps the original plain JSON commitment format. After deployment, the
 }
 ```
 
-If you deploy with `--competition all`, both keys point to the same endpoint UID:
+If you deploy with `--competition all`, the LLM keys point to the same endpoint UID:
 
 ```json
 {
   "codenames": "serv-u-xxxxxxxxxxxxxxxx",
   "twentyq": "serv-u-xxxxxxxxxxxxxxxx"
+}
+```
+
+If you deploy SuperMario separately, the commitment includes the canonical `supermario` key:
+
+```json
+{
+  "supermario": "serv-u-zzzzzzzzzzzzzzzz"
 }
 ```
 
