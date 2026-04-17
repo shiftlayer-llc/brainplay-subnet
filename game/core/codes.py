@@ -17,6 +17,8 @@ class GameCodeInfo:
     competition_code: str
     mechid: int
     display_name: str
+    weight_group: str = "llm"
+    publish_mechid: int = 0
     default_interval: str = "1 minutes"
 
 
@@ -27,19 +29,34 @@ _SUPPORTED_GAMES: Dict[str, GameCodeInfo] = {
         competition_code="codenames",
         mechid=0,
         display_name="Codenames",
+        weight_group="llm",
+        publish_mechid=0,
     ),
     "twentyq": GameCodeInfo(
         game_code="twentyq",
         competition_code="twentyq",
-        mechid=1,
+        mechid=0,
         display_name="20 Questions",
+        weight_group="llm",
+        publish_mechid=0,
     ),
+    "supermario": GameCodeInfo(
+        game_code="supermario",
+        competition_code="supermario",
+        mechid=1,
+        display_name="SuperMario",
+        weight_group="vision",
+        publish_mechid=1,
+    ),
+}
+
+_ALIASES: Dict[str, str] = {
+    "mario": "supermario",
 }
 
 
 # Reserved/planned codes (no mechid guarantees yet).
 _RESERVED_GAME_CODES: Tuple[str, ...] = (
-    "mario",
     "2048",
     "pacman",
     "chess",
@@ -49,7 +66,8 @@ _RESERVED_GAME_CODES: Tuple[str, ...] = (
 
 def normalize_game_code(code: str) -> str:
     """Normalize a user-provided game/competition code."""
-    return (code or "").strip().lower()
+    normalized = (code or "").strip().lower()
+    return _ALIASES.get(normalized, normalized)
 
 
 def get_game_code_info(code: str) -> GameCodeInfo:
@@ -64,6 +82,19 @@ def get_game_code_info(code: str) -> GameCodeInfo:
 def list_supported_game_codes() -> Tuple[str, ...]:
     """List runtime-supported game codes in stable order."""
     return tuple(_SUPPORTED_GAMES.keys())
+
+
+def list_supported_game_infos() -> Tuple[GameCodeInfo, ...]:
+    return tuple(_SUPPORTED_GAMES.values())
+
+
+def list_supported_game_codes_for_weight_group(weight_group: str) -> Tuple[str, ...]:
+    normalized = normalize_game_code(weight_group)
+    return tuple(
+        info.game_code
+        for info in _SUPPORTED_GAMES.values()
+        if normalize_game_code(info.weight_group) == normalized
+    )
 
 
 def list_reserved_game_codes() -> Tuple[str, ...]:

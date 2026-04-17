@@ -24,6 +24,7 @@ from abc import ABC, abstractmethod
 
 # Sync calls set weights and also resyncs the metagraph.
 from game.config import check_config, add_args, config
+from game.core.codes import get_game_code_info, normalize_game_code
 from game.plugins.codenames.game_types import Competition
 from game.common.misc import ttl_get_block
 from game import __spec_version__ as spec_version
@@ -84,8 +85,9 @@ class BaseNeuron(ABC):
         if self.config.competition == "main":
             self.mechid = 0
         else:
-            competition = Competition(self.config.competition)
-            self.mechid = competition.mechid
+            self.config.competition = normalize_game_code(self.config.competition)
+            competition_info = get_game_code_info(self.config.competition)
+            self.mechid = competition_info.publish_mechid
         self.metagraph: bt.Metagraph = self.subtensor.metagraph(
             self.config.netuid, mechid=self.mechid
         )

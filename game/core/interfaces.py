@@ -73,6 +73,8 @@ class GamePlugin(Protocol):
     game_code: str
     competition_code: str
     mechid: int
+    weight_group: str
+    publish_mechid: int
     display_name: str
     protocol_version: str
 

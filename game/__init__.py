@@ -17,7 +17,7 @@
 # DEALINGS IN THE SOFTWARE.
 
 # Define the version of the module.
-__version__ = "2.3.3"
+__version__ = "2.4.0"
 version_split = __version__.split(".")
 __spec_version__ = (
     (1000 * int(version_split[0]))
@@ -25,6 +25,20 @@ __spec_version__ = (
     + (1 * int(version_split[2]))
 )
 __image_hash__ = "4b9ba675ef3c8ca8b8e41dfe7636b5c72c507711befe76562d18326572efcfef"
+__mario_image_hash__ = (
+    "4b9ba675ef3c8ca8b8e41dfe7636b5c72c507711befe76562d18326572efcfef"
+)
+
+_IMAGE_HASH_BY_COMPETITION = {
+    "mario": __mario_image_hash__,
+    "supermario": __mario_image_hash__,
+}
+
+
+def get_image_hash_for_competition(competition: str | None) -> str:
+    normalized = (competition or "").strip().lower()
+    return _IMAGE_HASH_BY_COMPETITION.get(normalized, __image_hash__)
+
 
 # Import all submodules.
 from . import protocol

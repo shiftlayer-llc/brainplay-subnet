@@ -629,9 +629,9 @@ class ScoreStore:
         try:
             headers = self.signer() if self.signer else {}
             params = {}
+            # Backend sync endpoints return rows with incId > since_id, so send
+            # the last synced id directly. Adding 1 skips the next row.
             since_id = self.max_scores_all_id()
-            if since_id > 0:
-                since_id += 1
             params["since_id"] = since_id
             params["limit"] = 100
             page_num = 0

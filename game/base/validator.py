@@ -39,12 +39,19 @@ from game.base.utils.weight_utils import (
     process_weights_for_netuid,
     convert_weights_and_uids_for_emit,
 )  # TODO: Replace when bittensor switches to numpy
+from game.core.codes import (
+    get_game_code_info,
+    list_supported_game_codes,
+    list_supported_game_codes_for_weight_group,
+    normalize_game_code,
+)
 from game.core.registry import get_registry
 from game.config import add_validator_args
 from game.config.defaults import DEFAULT_SCORING_INTERVAL
 from game.storage.aggregation import parse_interval_to_seconds
 from game.storage.legacy_codenames_store import ScoreStore
 from game.storage.store import GenericStore
+from game.storage.weight_state import WeightStateStore
 from game.plugins.codenames.game_types import Competition, Game
 from dotenv import load_dotenv
 
@@ -91,7 +98,7 @@ class BaseValidatorNeuron(BaseNeuron):
 
     @staticmethod
     def _competition_codes_for_main() -> list[str]:
-        return [competition.value for competition in Competition]
+        return list(list_supported_game_codes())
 
     @staticmethod
     def _base_validator_argv(argv: list[str]) -> list[str]:
@@ -168,6 +175,10 @@ class BaseValidatorNeuron(BaseNeuron):
             from game.plugins.twentyq import get_twentyq_plugin
 
             registry.register(get_twentyq_plugin())
+        if registry.maybe_get_by_game_code("supermario") is None:
+            from game.plugins.supermario import get_supermario_plugin
+
+            registry.register(get_supermario_plugin())
         return registry
 
     def _resolve_game_plugin_from_config(self) -> Optional[object]:
@@ -305,6 +316,8 @@ class BaseValidatorNeuron(BaseNeuron):
         self.generic_store = GenericStore(scores_db_path)
         self.generic_store.init()
         self.score_store.generic_store = self.generic_store
+        self.weight_state = WeightStateStore("/tmp/brainplay_weight_state.db")
+        self.weight_state.init()
         scoring_interval_text = DEFAULT_SCORING_INTERVAL
         if hasattr(self.config, "scoring") and getattr(
             self.config.scoring, "interval", None
@@ -333,16 +346,19 @@ class BaseValidatorNeuron(BaseNeuron):
         """
 
         # Init competition and game codes
+        self.config.competition = normalize_game_code(self.config.competition)
         competition = Competition(self.config.competition)
+        competition_info = get_game_code_info(self.config.competition)
         configured_game_code = getattr(self.config.game, "code", None)
+        configured_game_code = normalize_game_code(configured_game_code)
         if competition != Competition.CODENAMES and (
             not configured_game_code or configured_game_code == "codenames"
         ):
-            configured_game_code = competition.value
-            self.config.game.code = configured_game_code
+            configured_game_code = competition_info.game_code
+        self.config.game.code = configured_game_code
         game = Game(configured_game_code)
         self.competition = competition
-        self.mechid = competition.mechid
+        self.mechid = competition_info.publish_mechid
         self.game = game
         self.game_plugin = self._resolve_game_plugin_from_config()
         if self.game_plugin is not None:
@@ -576,6 +592,7 @@ class BaseValidatorNeuron(BaseNeuron):
 
         competition = self.competition
         comp_value = competition.value
+        competition_info = get_game_code_info(comp_value)
         validator_hotkey = self.wallet.hotkey.ss58_address
         use_generic_scores = (
             comp_value != "codenames"
@@ -596,7 +613,15 @@ class BaseValidatorNeuron(BaseNeuron):
             bt.logging.warning(
                 f"Latest synced score is older than 1 hour ({age_seconds:.0f}s). Switching to burn code."
             )
-            self._burn_weights()
+            self._store_and_publish_weight_snapshot(
+                competition_code=comp_value,
+                competition_info=competition_info,
+                since_ts=since_ts,
+                end_ts=end_ts,
+                raw_weights=self._burn_vector(),
+                status="stale",
+                scores_summary={"reason": "stale_scores", "age_seconds": age_seconds},
+            )
             return
 
         weights = np.zeros(self.metagraph.n, dtype=np.float32)
@@ -705,7 +730,15 @@ class BaseValidatorNeuron(BaseNeuron):
             bt.logging.warning(
                 f"Not enough games for competition {comp_value}; skipping its allocation. ({comp_games} < 30)"
             )
-            self._burn_weights(competition.mechid)
+            self._store_and_publish_weight_snapshot(
+                competition_code=comp_value,
+                competition_info=competition_info,
+                since_ts=since_ts,
+                end_ts=end_ts,
+                raw_weights=self._burn_vector(),
+                status="insufficient_games",
+                scores_summary={"games": comp_games},
+            )
             return
 
         avg_scores_after_record_limit = {
@@ -717,6 +750,15 @@ class BaseValidatorNeuron(BaseNeuron):
             bt.logging.warning(
                 f"No scores for competition {comp_value}; skipping its allocation."
             )
+            self._store_and_publish_weight_snapshot(
+                competition_code=comp_value,
+                competition_info=competition_info,
+                since_ts=since_ts,
+                end_ts=end_ts,
+                raw_weights=self._burn_vector(),
+                status="no_scores",
+                scores_summary={"games": comp_games},
+            )
             return
 
         top_score = max(avg_scores_after_record_limit.values())
@@ -724,7 +766,15 @@ class BaseValidatorNeuron(BaseNeuron):
             bt.logging.warning(
                 f"Top score for competition {comp_value} is non-positive; skipping."
             )
-            self._burn_weights(competition.mechid)
+            self._store_and_publish_weight_snapshot(
+                competition_code=comp_value,
+                competition_info=competition_info,
+                since_ts=since_ts,
+                end_ts=end_ts,
+                raw_weights=self._burn_vector(),
+                status="non_positive_top_score",
+                scores_summary={"top_score": top_score},
+            )
             return
 
         top_hotkeys = [
@@ -744,14 +794,30 @@ class BaseValidatorNeuron(BaseNeuron):
             bt.logging.warning(
                 f"No top hotkeys for competition {comp_value} present in metagraph; skipping."
             )
-            self._burn_weights(competition.mechid)
+            self._store_and_publish_weight_snapshot(
+                competition_code=comp_value,
+                competition_info=competition_info,
+                since_ts=since_ts,
+                end_ts=end_ts,
+                raw_weights=self._burn_vector(),
+                status="winner_missing",
+                scores_summary={"top_hotkeys": top_hotkeys},
+            )
             return
 
         if len(winner_uids) > 1:
             bt.logging.info(
                 f"Competition {comp_value} has multiple winners: {winner_uids} with score {top_score}; skipping"
             )
-            self._burn_weights(competition.mechid)
+            self._store_and_publish_weight_snapshot(
+                competition_code=comp_value,
+                competition_info=competition_info,
+                since_ts=since_ts,
+                end_ts=end_ts,
+                raw_weights=self._burn_vector(),
+                status="tied_winner",
+                scores_summary={"winner_uids": winner_uids, "top_score": top_score},
+            )
             return
 
         # Set minimum weight for scored miners
@@ -783,10 +849,131 @@ class BaseValidatorNeuron(BaseNeuron):
             norm = np.ones_like(norm)
         raw_weights = weights / norm
 
-        self._set_weights(competition.mechid, raw_weights)
+        self._store_and_publish_weight_snapshot(
+            competition_code=comp_value,
+            competition_info=competition_info,
+            since_ts=since_ts,
+            end_ts=end_ts,
+            raw_weights=raw_weights,
+            status="ready",
+            scores_summary={
+                "top_score": top_score,
+                "winner_hotkey": winner_hotkey,
+            },
+        )
         time.sleep(12)  # Sleep to avoid nonce issues
 
         self.resync_metagraph()
+
+    def _burn_vector(self) -> np.ndarray:
+        burn_weights = np.zeros(self.metagraph.n, dtype=np.float32)
+        if self.metagraph.n > 0:
+            burn_weights[0] = 1.0
+        return burn_weights
+
+    def _store_and_publish_weight_snapshot(
+        self,
+        *,
+        competition_code: str,
+        competition_info,
+        since_ts: float,
+        end_ts: float,
+        raw_weights: np.ndarray,
+        status: str,
+        scores_summary: dict,
+    ) -> None:
+        validator_hotkey = self.wallet.hotkey.ss58_address
+        self.weight_state.upsert_snapshot(
+            validator_hotkey=validator_hotkey,
+            competition_code=competition_code,
+            weight_group=competition_info.weight_group,
+            publish_mechid=competition_info.publish_mechid,
+            window_since_ts=int(since_ts),
+            window_end_ts=int(end_ts),
+            weights=raw_weights,
+            scores_summary=scores_summary,
+            status=status,
+        )
+        self._publish_weight_group(
+            validator_hotkey=validator_hotkey,
+            weight_group=competition_info.weight_group,
+            publish_mechid=competition_info.publish_mechid,
+        )
+
+    def _publish_weight_group(
+        self,
+        *,
+        validator_hotkey: str,
+        weight_group: str,
+        publish_mechid: int,
+    ) -> None:
+        required_codes = list_supported_game_codes_for_weight_group(weight_group)
+        snapshots = self.weight_state.get_fresh_snapshots(
+            validator_hotkey=validator_hotkey,
+            weight_group=weight_group,
+            freshness_ttl_sec=3600,
+        )
+        ready_snapshots = {
+            code: snapshot
+            for code, snapshot in snapshots.items()
+            if snapshot.get("status") == "ready"
+        }
+        missing_codes = [code for code in required_codes if code not in ready_snapshots]
+        if missing_codes:
+            previous = self.weight_state.get_publication(
+                validator_hotkey=validator_hotkey, weight_group=weight_group
+            )
+            if previous is not None:
+                bt.logging.info(
+                    f"[WEIGHTS] Missing fresh snapshots for group={weight_group}: "
+                    f"{missing_codes}; keeping last publication."
+                )
+                return
+            bt.logging.warning(
+                f"[WEIGHTS] Missing fresh snapshots for group={weight_group}: "
+                f"{missing_codes}; publishing burn weights."
+            )
+            final_weights = self._burn_vector()
+        else:
+            ratios = self._weight_group_ratios(weight_group, ready_snapshots)
+            final_weights = np.zeros(self.metagraph.n, dtype=np.float32)
+            for code, ratio in ratios.items():
+                snapshot_weights = np.asarray(
+                    ready_snapshots[code]["weights"], dtype=np.float32
+                )
+                if snapshot_weights.shape[0] != self.metagraph.n:
+                    bt.logging.warning(
+                        f"[WEIGHTS] Snapshot size mismatch for {code}; publishing burn."
+                    )
+                    final_weights = self._burn_vector()
+                    break
+                final_weights = final_weights + (snapshot_weights * float(ratio))
+            norm = np.linalg.norm(final_weights, ord=1, axis=0, keepdims=True)
+            if np.any(norm == 0) or np.isnan(norm).any():
+                final_weights = self._burn_vector()
+            else:
+                final_weights = final_weights / norm
+
+        self._set_weights(publish_mechid, final_weights)
+        self.weight_state.upsert_publication(
+            validator_hotkey=validator_hotkey,
+            weight_group=weight_group,
+            publish_mechid=publish_mechid,
+            weights=final_weights,
+            source_competitions=list(required_codes),
+        )
+
+    @staticmethod
+    def _weight_group_ratios(
+        weight_group: str, snapshots: dict[str, dict]
+    ) -> dict[str, float]:
+        if weight_group == "llm" and {"codenames", "twentyq"}.issubset(
+            snapshots.keys()
+        ):
+            return {"codenames": 0.5, "twentyq": 0.5}
+        count = max(1, len(snapshots))
+        ratio = 1.0 / float(count)
+        return {code: ratio for code in snapshots}
 
     def _log_competition_scores(
         self,
@@ -909,9 +1096,7 @@ class BaseValidatorNeuron(BaseNeuron):
 
     def _burn_weights(self, mechid: int = None) -> None:
         """Sets weights to burn code (all weight to UID 0)."""
-        burn_weights = np.zeros(self.metagraph.n, dtype=np.float32)
-        if self.metagraph.n > 0:
-            burn_weights[0] = 1.0
+        burn_weights = self._burn_vector()
         if mechid is None:
             self._set_weights(0, burn_weights)
             self._set_weights(1, burn_weights)

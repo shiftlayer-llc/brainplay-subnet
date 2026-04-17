@@ -18,9 +18,8 @@ from openai import OpenAI
 from game.common.epistula import generate_header
 from game.common.misc import extract_json
 from game.common.targon import normalize_endpoint_url
-from game.core.commitment_reader import read_endpoints
+from game.core.endpoint_resolver import read_endpoints_for_competition
 from game.core.interfaces import AttemptResult, SessionResult
-from game.plugins.codenames.game_types import Competition
 from game.plugins.twentyq.backend_mapper import (
     make_create_payload,
     make_score_payload,
@@ -190,7 +189,11 @@ class TwentyQValidatorRunner:
         ]
         bt.logging.info(f"[20Q] Uids to ping: {uids_to_ping}")
 
-        endpoints = read_endpoints(self.validator, Competition.TWENTYQ, uids_to_ping)
+        endpoints = read_endpoints_for_competition(
+            self.validator,
+            competition_code="twentyq",
+            uids=uids_to_ping,
+        )
         if not endpoints:
             bt.logging.warning("[20Q] No committed endpoints found.")
             return [], {}

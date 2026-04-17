@@ -66,3 +66,15 @@ class BackendClient:
                 timeout=self.timeout_sec,
             ) as resp:
                 return await resp.json(content_type=None)
+
+    async def upload_room_video(
+        self, game_code: str, room_id: str, payload: Dict[str, Any]
+    ) -> Any:
+        async with aiohttp.ClientSession() as session:
+            async with session.patch(
+                f"{self.base_url}/api/v1/games/{game_code}/video/{room_id}",
+                json=payload,
+                headers=self._headers(),
+                timeout=max(self.timeout_sec, 120),
+            ) as resp:
+                return await resp.json(content_type=None)

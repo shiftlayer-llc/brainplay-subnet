@@ -14,6 +14,7 @@ import httpx
 from targon.cli.auth import get_stored_key
 from targon.utils.config_parser import load_config
 from game.common.targon import extract_workload_uid, normalize_endpoint_url
+from game.core.codes import normalize_game_code
 
 bt.logging.off()
 
@@ -43,7 +44,7 @@ def _ensure_typing_self() -> None:
 
 
 def _resolve_competition(value: str) -> tuple[str, list[str], Path, str]:
-    normalized = value.strip().lower()
+    normalized = normalize_game_code(value)
     config_path = PROFILES_DIR / f"{normalized}.json"
     if not config_path.exists():
         available = sorted(p.stem for p in PROFILES_DIR.glob("*.json"))
