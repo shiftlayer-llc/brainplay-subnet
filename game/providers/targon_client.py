@@ -4,7 +4,7 @@ import asyncio
 import aiohttp
 from game.common.epistula import generate_header
 from game.common.targon import extract_workload_uid, normalize_endpoint_url
-from game import __image_hash__
+from game import get_image_hash_for_competition
 
 
 def _log_yellow_info(message: str) -> None:
@@ -45,12 +45,14 @@ async def _check_image_hash(self, endpoint: str, uid: int | None = None) -> bool
     try:
         url = f"https://api.targon.com/tha/v2/workloads/verify"
         workload_uid = extract_workload_uid(endpoint)
+        competition = getattr(getattr(self, "config", None), "competition", None)
+        expected_image_hash = get_image_hash_for_competition(competition)
         headers = {
             "Authorization": f"Bearer {os.getenv('TARGON_API_KEY')}",
             "Content-Type": "application/json",
         }
         async with aiohttp.ClientSession() as session:
-            payloads = [{"uid": workload_uid, "digest": __image_hash__}]
+            payloads = [{"uid": workload_uid, "digest": expected_image_hash}]
             normalized_url = normalize_endpoint_url(endpoint)
             if workload_uid.startswith("serv-"):
                 payloads.append({"url": normalized_url})
@@ -87,12 +89,12 @@ async def _check_image_hash(self, endpoint: str, uid: int | None = None) -> bool
                 if bool(data.get("verified")):
                     return True
             elif "image_hash" in (data or {}):
-                if data.get("image_hash") == __image_hash__:
+                if data.get("image_hash") == expected_image_hash:
                     return True
 
             bt.logging.info(
                 f"Image digest verification failed for endpoint {endpoint}: "
-                f"workload_uid={workload_uid}"
+                f"workload_uid={workload_uid} competition={competition}"
             )
         return False
     except Exception as e:
