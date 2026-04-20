@@ -361,11 +361,16 @@ def _commit_endpoint(
     subtensor = bt.Subtensor(network)
     existing = _load_existing_commitment(subtensor, netuid, wallet.hotkey.ss58_address)
     print(f"ℹ️ Existing commitment data: {existing}")
-    # Filter out deprecated competitions
-    existing = {}
+    if not isinstance(existing, dict):
+        existing = {}
+    existing = {
+        key: extract_workload_uid(value) if isinstance(value, str) else value
+        for key, value in existing.items()
+    }
+    compact_endpoint = extract_workload_uid(endpoint_uid) or endpoint_uid
     for competition_key in competition_keys:
-        existing[competition_key] = endpoint_uid
-    data_to_str = json.dumps(existing)
+        existing[competition_key] = compact_endpoint
+    data_to_str = json.dumps(existing, separators=(",", ":"))
     ok = subtensor.set_commitment(wallet, netuid, data_to_str, period=period)
     competitions_label = ", ".join(competition_keys)
     print(f"✅ Committed endpoint {endpoint_uid} for competitions {competitions_label}")
