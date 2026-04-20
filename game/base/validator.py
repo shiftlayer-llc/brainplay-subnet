@@ -918,22 +918,38 @@ class BaseValidatorNeuron(BaseNeuron):
             for code, snapshot in snapshots.items()
             if snapshot.get("status") == "ready"
         }
+        non_ready_snapshots = {
+            code: snapshot
+            for code, snapshot in snapshots.items()
+            if code in required_codes and snapshot.get("status") != "ready"
+        }
         missing_codes = [code for code in required_codes if code not in ready_snapshots]
         if missing_codes:
-            previous = self.weight_state.get_publication(
-                validator_hotkey=validator_hotkey, weight_group=weight_group
-            )
-            if previous is not None:
-                bt.logging.info(
-                    f"[WEIGHTS] Missing fresh snapshots for group={weight_group}: "
-                    f"{missing_codes}; keeping last publication."
+            if non_ready_snapshots:
+                status_summary = {
+                    code: snapshot.get("status")
+                    for code, snapshot in non_ready_snapshots.items()
+                }
+                bt.logging.warning(
+                    f"[WEIGHTS] Fresh non-ready snapshots for group={weight_group}: "
+                    f"{status_summary}; publishing burn weights."
                 )
-                return
-            bt.logging.warning(
-                f"[WEIGHTS] Missing fresh snapshots for group={weight_group}: "
-                f"{missing_codes}; publishing burn weights."
-            )
-            final_weights = self._burn_vector()
+                final_weights = self._burn_vector()
+            else:
+                previous = self.weight_state.get_publication(
+                    validator_hotkey=validator_hotkey, weight_group=weight_group
+                )
+                if previous is not None:
+                    bt.logging.info(
+                        f"[WEIGHTS] Missing fresh snapshots for group={weight_group}: "
+                        f"{missing_codes}; keeping last publication."
+                    )
+                    return
+                bt.logging.warning(
+                    f"[WEIGHTS] Missing fresh snapshots for group={weight_group}: "
+                    f"{missing_codes}; publishing burn weights."
+                )
+                final_weights = self._burn_vector()
         else:
             ratios = self._weight_group_ratios(weight_group, ready_snapshots)
             final_weights = np.zeros(self.metagraph.n, dtype=np.float32)
